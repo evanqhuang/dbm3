@@ -1,0 +1,3 @@
+[submodule "libbuhlmann"]
+	path = libbuhlmann
+	url = https://github.com/AquaBSD/libbuhlmann
