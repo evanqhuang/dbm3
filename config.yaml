@@ -1,0 +1,28 @@
+# Configuration file for Slab Decompression Model
+
+# Simulation parameters
+dt: 0.5           # Time step in seconds (smaller = more precise)
+dx: 1.0           # Distance between slices (arbitrary units)
+permeability: 0.01  # Blood-tissue barrier permeability
+f_o2: 0.21        # Breathing gas O2 fraction (Air = 0.21)
+surface_altitude_m: 0.0  # Altitude of the water surface (0m = Sea Level)
+
+# Compartment definitions
+compartments:
+  - name: "Spine"      # Fast, Sensitive (Spine)
+    D: 0.002           # Diffusion coefficient
+    slices: 20         # Number of slices
+    m_value_max: 3.0   # M-value at surface
+    m_value_min: 1.2   # M-value at core
+
+  - name: "Muscle"     # Medium (Muscle)
+    D: 0.0005          # Diffusion coefficient
+    slices: 20         # Number of slices
+    m_value_max: 3.5   # M-value at surface
+    m_value_min: 1.5   # M-value at core
+
+  - name: "Joints"     # Slow, Robust but traps gas (Joints)
+    D: 0.0001          # Diffusion coefficient
+    slices: 20         # Number of slices
+    m_value_max: 4.0   # M-value at surface
+    m_value_min: 2.0   # M-value at core

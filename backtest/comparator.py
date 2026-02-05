@@ -150,9 +150,9 @@ def _parse_buhlmann_output(output: str) -> Optional[BuhlmannResult]:
 def _run_slab_single(slab_params: dict, profile: DiveProfile) -> Optional[SlabResult]:
     """Helper function for parallel Slab execution."""
     try:
+        # Use the new multi-compartment model
         model = SlabModel(
-            slices=slab_params["slices"],
-            diffusion_coefficient=slab_params["diffusion_coefficient"],
+            compartments_config=slab_params.get("compartments_config"),
             dt=slab_params["dt"],
             dx=slab_params["dx"],
             permeability=slab_params["permeability"],
@@ -377,8 +377,7 @@ class ModelComparator:
         # Slab: Use ProcessPoolExecutor (CPU bound)
         slab_start = time_module.time()
         slab_params = {
-            "slices": self.slab.slices,
-            "diffusion_coefficient": self.slab.D,
+            "compartments_config": self.slab.get_compartment_config(),
             "dt": self.slab.dt,
             "dx": self.slab.dx,
             "permeability": self.slab.permeability,

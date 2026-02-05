@@ -99,6 +99,7 @@ def run_quick_test():
         depths=[10.0, 20.0, 30.0, 40.0],
         times=[10, 20, 30],
         save_plots=True,
+        save_data=True,
         output_dir="backtest_output",
     )
 
@@ -116,6 +117,7 @@ def run_default_test():
         depths=[float(x) for x in range(10, 55, 5)],  # 10-50m in 5m steps
         times=list(range(5, 45, 5)),  # 5-40min in 5min steps
         save_plots=True,
+        save_data=True,
         output_dir="backtest_output",
     )
 
@@ -138,7 +140,7 @@ def run_full_test():
     print(f"Generating {total} profiles...")
 
     results = run_full_backtest(
-        depths=depths, times=times, save_plots=True, output_dir="backtest_output_full"
+        depths=depths, times=times, save_plots=True, save_data=True, output_dir="backtest_output_full"
     )
 
     print_report(results["report"])
