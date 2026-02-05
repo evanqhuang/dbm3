@@ -158,6 +158,8 @@ def _run_slab_single(slab_params: dict, profile: DiveProfile) -> Optional[SlabRe
             permeability=slab_params["permeability"],
             f_o2=slab_params["f_o2"],
             surface_altitude_m=slab_params["surface_altitude_m"],
+            sat_limit_bottom=slab_params.get("sat_limit_bottom", 1.0),
+            sat_limit_surface=slab_params.get("sat_limit_surface", 1.0),
         )
         return model.run(profile)
     except Exception:
@@ -383,6 +385,8 @@ class ModelComparator:
             "permeability": self.slab.permeability,
             "f_o2": self.slab.f_o2,
             "surface_altitude_m": self.slab.surface_altitude_m,
+            "sat_limit_bottom": self.slab.sat_limit_bottom,
+            "sat_limit_surface": self.slab.sat_limit_surface,
         }
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {

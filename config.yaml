@@ -7,22 +7,24 @@ permeability: 0.01  # Blood-tissue barrier permeability
 f_o2: 0.21        # Breathing gas O2 fraction (Air = 0.21)
 surface_altitude_m: 0.0  # Altitude of the water surface (0m = Sea Level)
 
+# Saturation Limits (conservatism tuning)
+# 1.0/1.0 = no conservatism (raw M-values)
+# 0.3/0.85 = 30/85 (aggressive recreational)
+# 0.2/0.7 = 20/70 (conservative technical)
+sat_limit_bottom: 1.0
+sat_limit_surface: 1.0
+
 # Compartment definitions
+# M-values are derived from D, dx, and permeability (Buhlmann-style a/b parameters)
 compartments:
-  - name: "Spine"      # Fast, Sensitive (Spine)
+  - name: "Spine"      # Fast, Sensitive
     D: 0.002           # Diffusion coefficient
     slices: 20         # Number of slices
-    m_value_max: 3.0   # M-value at surface
-    m_value_min: 1.2   # M-value at core
 
-  - name: "Muscle"     # Medium (Muscle)
+  - name: "Muscle"     # Medium
     D: 0.0005          # Diffusion coefficient
     slices: 20         # Number of slices
-    m_value_max: 3.5   # M-value at surface
-    m_value_min: 1.5   # M-value at core
 
-  - name: "Joints"     # Slow, Robust but traps gas (Joints)
+  - name: "Joints"     # Slow, traps gas
     D: 0.0001          # Diffusion coefficient
     slices: 20         # Number of slices
-    m_value_max: 4.0   # M-value at surface
-    m_value_min: 2.0   # M-value at core

@@ -14,17 +14,62 @@ import os
 from backtest.profile_generator import DiveProfile
 
 
+def _compute_effective_half_times(
+    D: float, slices: int, dx: float, permeability: float, diffusion_constant: float = 2.47
+) -> np.ndarray:
+    """Derive effective half-time for each slice from diffusion physics.
+    Slice 0: t_half = ln(2)/permeability (barrier-limited)
+    Slice i>0: t_half = ln(2)/permeability + (i*dx)^2 / (C*D) (diffusion-limited)
+    Returns half-times in minutes.
+    """
+    ln2 = np.log(2)
+    barrier_time = ln2 / permeability  # seconds
+    indices = np.arange(slices, dtype=float)
+    diffusion_time = (indices * dx) ** 2 / (diffusion_constant * D)  # seconds
+    total_seconds = barrier_time + diffusion_time
+    return total_seconds / 60.0  # convert to minutes
+
+
+def _half_time_to_a(half_times: np.ndarray) -> np.ndarray:
+    """Map half-times (minutes) to Buhlmann 'a' parameters.
+    Empirical fit from ZH-L16C: a ≈ 2.0 * t_half^(-1/3)
+    """
+    a = 2.0 * np.power(half_times, -1.0 / 3.0)
+    return np.clip(a, 0.2, 3.0)
+
+
+def _half_time_to_b(half_times: np.ndarray) -> np.ndarray:
+    """Map half-times (minutes) to Buhlmann 'b' parameters.
+    Empirical fit from ZH-L16C: b ≈ 1.005 - t_half^(-1/2)
+    """
+    b = 1.005 - np.power(half_times, -0.5)
+    return np.clip(b, 0.5, 0.99)
+
+
 @dataclass
 class TissueCompartment:
     """Represents a single tissue compartment with its own properties."""
     name: str
     D: float  # Diffusion coefficient
     slices: int  # Number of slices
-    m_value_max: float  # M-value at surface
-    m_value_min: float  # M-value at core
     slab: np.ndarray  # Current tissue state
-    m_values: np.ndarray  # M-value array for this compartment
+    a_values: np.ndarray  # Buhlmann 'a' parameter per slice
+    b_values: np.ndarray  # Buhlmann 'b' parameter per slice
+    half_times: np.ndarray  # Effective half-time per slice (minutes)
     k: float  # Stability constant for this compartment
+
+    def get_m_values(self, ambient_pressure: float) -> np.ndarray:
+        """Compute depth-dependent M-values at given ambient pressure.
+        M = a + P_ambient / b (Buhlmann formulation)
+        """
+        return self.a_values + ambient_pressure / self.b_values
+
+    def get_limited_m_values(self, ambient_pressure: float, sat_limit: float) -> np.ndarray:
+        """Compute saturation-limited M-values at given ambient pressure.
+        M_limited = P_amb + sat_limit * (M_raw - P_amb)
+        """
+        m_raw = self.get_m_values(ambient_pressure)
+        return ambient_pressure + sat_limit * (m_raw - ambient_pressure)
 
 
 @dataclass
@@ -85,6 +130,8 @@ class SlabModel:
         permeability: Optional[float] = None,
         f_o2: float = None,
         surface_altitude_m: float = None,
+        sat_limit_bottom: Optional[float] = None,
+        sat_limit_surface: Optional[float] = None,
     ):
         """
         Initialize the Multi-Compartment Slab model.
@@ -92,7 +139,7 @@ class SlabModel:
         Args:
             config_path: Path to YAML config file. If provided, loads parameters from file.
             compartments_config: List of dicts with compartment params (overrides config file)
-                                Each dict has: name, D, slices, m_value_max, m_value_min
+                                Each dict has: name, D, slices
                                 If None, uses default 3-compartment model or loads from config file
             dt: Time step in seconds (smaller = more precise)
             dx: Distance between slices (arbitrary units)
@@ -101,6 +148,8 @@ class SlabModel:
                           Typical range: 0.001 (slow barrier) to 0.1 (fast barrier)
             f_o2: Breathing gas O2 fraction (Air = 0.21)
             surface_altitude_m: Altitude of the water surface (0m = Sea Level)
+            sat_limit_bottom: Saturation limit at maximum depth (0.0-1.0, default 1.0 = no conservatism)
+            sat_limit_surface: Saturation limit at surface (0.0-1.0, default 1.0 = no conservatism)
         """
 
         # Load configuration from file if provided
@@ -115,6 +164,8 @@ class SlabModel:
         self.permeability = permeability if permeability is not None else config.get('permeability', 0.0003)
         self.f_o2 = f_o2 if f_o2 is not None else config.get('f_o2', 0.21)
         self.surface_altitude_m = surface_altitude_m if surface_altitude_m is not None else config.get('surface_altitude_m', 0.0)
+        self.sat_limit_bottom = sat_limit_bottom if sat_limit_bottom is not None else config.get('sat_limit_bottom', 1.0)
+        self.sat_limit_surface = sat_limit_surface if sat_limit_surface is not None else config.get('sat_limit_surface', 1.0)
 
         # Load compartments config
         if compartments_config is not None:
@@ -127,11 +178,11 @@ class SlabModel:
             # Use default compartments based on example.md
             final_compartments_config = [
                 # Fast, Sensitive (Spine)
-                {"name": "Spine", "D": 0.002, "slices": 20, "m_value_max": 3.0, "m_value_min": 1.2},
+                {"name": "Spine", "D": 0.002, "slices": 20},
                 # Medium (Muscle)
-                {"name": "Muscle", "D": 0.0005, "slices": 20, "m_value_max": 3.5, "m_value_min": 1.5},
+                {"name": "Muscle", "D": 0.0005, "slices": 20},
                 # Slow, Robust but traps gas (Joints)
-                {"name": "Joints", "D": 0.0001, "slices": 20, "m_value_max": 4.0, "m_value_min": 2.0}
+                {"name": "Joints", "D": 0.0001, "slices": 20},
             ]
 
         # Create compartments
@@ -140,29 +191,22 @@ class SlabModel:
             name = config_item["name"]
             D = config_item["D"]
             slices = config_item["slices"]
-            m_value_max = config_item["m_value_max"]
-            m_value_min = config_item["m_value_min"]
 
-            # Create the tissue slab
             slab = np.zeros(slices)
 
-            # Create M-Value Array (the "Death Line")
-            m_values = np.linspace(m_value_max, m_value_min, slices)
+            # Derive M-value parameters from diffusion physics
+            half_times = _compute_effective_half_times(D, slices, self.dx, self.permeability)
+            a_values = _half_time_to_a(half_times)
+            b_values = _half_time_to_b(half_times)
 
-            # Stability Constant (k)
-            k = (D * self.dt) / (self.dx**2)
+            k = (D * self.dt) / (self.dx ** 2)
             if k > 0.5:
                 raise ValueError(f"Stability Error in {name}")
 
             compartment = TissueCompartment(
-                name=name,
-                D=D,
-                slices=slices,
-                m_value_max=m_value_max,
-                m_value_min=m_value_min,
-                slab=slab,
-                m_values=m_values,
-                k=k
+                name=name, D=D, slices=slices, slab=slab,
+                a_values=a_values, b_values=b_values,
+                half_times=half_times, k=k,
             )
             self.compartments.append(compartment)
 
@@ -189,6 +233,15 @@ class SlabModel:
             depth_m
         )
         return p_total * (1 - f_o2)
+
+    def _get_sat_limit_at_pressure(self, ambient_pressure: float, max_depth_pressure: float) -> float:
+        """Interpolate saturation limit between sat_limit_bottom (at max depth) and sat_limit_surface (at surface)."""
+        p_surface = self._get_atmospheric_pressure()
+        if max_depth_pressure <= p_surface:
+            return self.sat_limit_surface
+        fraction = (max_depth_pressure - ambient_pressure) / (max_depth_pressure - p_surface)
+        fraction = float(np.clip(fraction, 0.0, 1.0))
+        return self.sat_limit_bottom + fraction * (self.sat_limit_surface - self.sat_limit_bottom)
 
     def _update_compartment(self, compartment: TissueCompartment, boundary_pressure: float):
         """
@@ -247,6 +300,10 @@ class SlabModel:
         max_depth_seen = 0.0
         max_depth_slabs = [compartment.slab.copy() for compartment in self.compartments]
 
+        # Track max depth pressure for GF interpolation
+        p_surface = self._get_atmospheric_pressure()
+        max_depth_pressure = p_surface
+
         # Track max supersaturation across ALL timesteps (not just final)
         max_supersaturation = 0.0
 
@@ -284,9 +341,15 @@ class SlabModel:
                 for compartment in self.compartments:
                     self._update_compartment(compartment, ppn2_current)
 
+                # Compute ambient pressure and GF for this timestep
+                p_ambient = self._get_atmospheric_pressure() + self._get_hydrostatic_pressure(current_depth)
+                if p_ambient > max_depth_pressure:
+                    max_depth_pressure = p_ambient
+                sat_limit = self._get_sat_limit_at_pressure(p_ambient, max_depth_pressure)
+
                 # Track supersaturation at every timestep
                 for compartment in self.compartments:
-                    step_supersaturation = np.max(compartment.slab / compartment.m_values)
+                    step_supersaturation = np.max(compartment.slab / compartment.get_limited_m_values(p_ambient, sat_limit))
                     if step_supersaturation > max_supersaturation:
                         max_supersaturation = step_supersaturation
 
@@ -309,16 +372,25 @@ class SlabModel:
                     max_loads.append(max(all_max_loads))
 
                     # Calculate margins across all compartments
-                    all_margins = [np.min(compartment.m_values - compartment.slab) for compartment in self.compartments]
+                    all_margins = [np.min(compartment.get_limited_m_values(p_ambient, sat_limit) - compartment.slab) for compartment in self.compartments]
                     margins.append(min(all_margins))
 
                 current_time += self.dt
 
-        # Process final point
+        # Process final point and compute ambient pressure and saturation limit
+        p_ambient_final = p_surface
+        sat_limit_final = self.sat_limit_surface
+
         if profile.points:
             t_final, d_final, _, _ = profile.points[-1]
             times.append(t_final)
             depths.append(d_final)
+
+            # Compute ambient pressure and GF for the final point
+            p_ambient_final = self._get_atmospheric_pressure() + self._get_hydrostatic_pressure(d_final)
+            if p_ambient_final > max_depth_pressure:
+                max_depth_pressure = p_ambient_final
+            sat_limit_final = self._get_sat_limit_at_pressure(p_ambient_final, max_depth_pressure)
 
             # Store final state of all compartments
             current_state = [compartment.slab.copy() for compartment in self.compartments]
@@ -329,7 +401,7 @@ class SlabModel:
             max_loads.append(max(all_max_loads))
 
             # Calculate margins across all compartments
-            all_margins = [np.min(compartment.m_values - compartment.slab) for compartment in self.compartments]
+            all_margins = [np.min(compartment.get_limited_m_values(p_ambient_final, sat_limit_final) - compartment.slab) for compartment in self.compartments]
             margins.append(min(all_margins))
 
         # Calculate summary metrics
@@ -341,12 +413,13 @@ class SlabModel:
         final_slabs = {compartment.name: compartment.slab.copy() for compartment in self.compartments}
 
         # Determine which compartment has the highest risk at the end
+        # Use the final point's ambient pressure and GF
         critical_compartment = ""
         overall_critical_slice = 0
         max_risk = 0
 
         for compartment in self.compartments:
-            risk_array = compartment.slab / compartment.m_values
+            risk_array = compartment.slab / compartment.get_limited_m_values(p_ambient_final, sat_limit_final)
             max_risk_in_compartment = np.max(risk_array)
             max_slice_in_compartment = int(np.argmax(risk_array))
 
@@ -357,7 +430,7 @@ class SlabModel:
 
         # Also check final state supersaturation (covers the final profile point)
         for compartment in self.compartments:
-            final_supersaturation = np.max(compartment.slab / compartment.m_values)
+            final_supersaturation = np.max(compartment.slab / compartment.get_limited_m_values(p_ambient_final, sat_limit_final))
             if final_supersaturation > max_supersaturation:
                 max_supersaturation = final_supersaturation
 
@@ -386,6 +459,9 @@ class SlabModel:
         Simulates the future to find how many minutes until any compartment hits its limit.
         Uses a linear search approach - clones state and runs forward in time.
 
+        NDL answers: "how long before I can't ascend directly to surface?"
+        So we check tissue against SURFACE M-values (with GF-high), not at-depth M-values.
+
         Args:
             current_slabs: Current tissue states for each compartment
             depth: Current depth in meters
@@ -394,9 +470,16 @@ class SlabModel:
         Returns:
             NDL in minutes (max_time if > max_time, essentially unlimited)
         """
-        # First check if we're already over the limit in any compartment
-        for i, compartment in enumerate(self.compartments):
-            if np.any(current_slabs[i] > compartment.m_values):
+        p_surface = self._get_atmospheric_pressure()
+        # Surface M-values with sat_limit_surface (constant throughout shadow simulation)
+        surface_m_values = [
+            compartment.get_limited_m_values(p_surface, self.sat_limit_surface)
+            for compartment in self.compartments
+        ]
+
+        # First check if we're already over the surface limit in any compartment
+        for i in range(len(self.compartments)):
+            if np.any(current_slabs[i] > surface_m_values[i]):
                 return 0
 
         # Calculate pressure at current depth (we are staying here)
@@ -431,9 +514,9 @@ class SlabModel:
                     shadow_slabs[i][-1] = shadow_slabs[i][-2]
 
             # The NDL Check:
-            # If ANY slice in ANY compartment exceeds its corresponding M-Value
-            for i, compartment in enumerate(self.compartments):
-                if np.any(shadow_slabs[i] > compartment.m_values):
+            # If ANY slice in ANY compartment exceeds its surface M-Value
+            for i in range(len(self.compartments)):
+                if np.any(shadow_slabs[i] > surface_m_values[i]):
                     return minute  # We found the limit!
 
         return max_time  # More than max_time mins (essentially unlimited)
@@ -441,49 +524,11 @@ class SlabModel:
     def calculate_ndl(
         self, current_slab: np.ndarray, depth: float, max_time: int = 100
     ) -> int:
-        """
-        Legacy method for single compartment NDL calculation.
-        For backward compatibility.
-        """
-        # This is kept for backward compatibility, but the multi-compartment version should be used
-        # First check if we're already over the limit
-        if np.any(current_slab > self.m_values):
-            return 0
-
-        p_bottom = self._get_atmospheric_pressure() + self._get_hydrostatic_pressure(
-            depth
+        """Legacy single-compartment NDL. Deprecated."""
+        raise NotImplementedError(
+            "Legacy single-compartment NDL not supported with depth-dependent M-values. "
+            "Use calculate_multi_compartment_ndl instead."
         )
-        ppn2_bottom = p_bottom * (1 - self.f_o2)
-
-        # Create shadow slab so we don't mess up the real dive
-        shadow_slab = current_slab.copy()
-
-        # Look ahead up to max_time minutes
-        for minute in range(max_time + 1):
-            # Run simulation for 60 seconds (one minute block)
-            steps_per_min = int(60 / self.dt)
-
-            for _ in range(steps_per_min):
-                # Update Boundary
-                if self.permeability is None:
-                    shadow_slab[0] = ppn2_bottom
-                else:
-                    flux = self.permeability * (ppn2_bottom - shadow_slab[0])
-                    shadow_slab[0] += flux * self.dt
-
-                # Diffuse (vectorized)
-                shadow_slab[1:-1] += self.k * (
-                    shadow_slab[:-2] - 2 * shadow_slab[1:-1] + shadow_slab[2:]
-                )
-                # No-flux deep end
-                shadow_slab[-1] = shadow_slab[-2]
-
-            # The NDL Check:
-            # If ANY slice in the shadow slab is higher than its matching M-Value
-            if np.any(shadow_slab > self.m_values):
-                return minute  # We found the limit!
-
-        return max_time  # More than max_time mins (essentially unlimited)
 
     def get_compartment_config(self):
         """Return the compartment configuration for serialization/pickling."""
@@ -493,8 +538,6 @@ class SlabModel:
                 "name": compartment.name,
                 "D": compartment.D,
                 "slices": compartment.slices,
-                "m_value_max": compartment.m_value_max,
-                "m_value_min": compartment.m_value_min
             })
         return config
 

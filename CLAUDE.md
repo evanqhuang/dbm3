@@ -60,7 +60,8 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 - **`DiveProfile`** (`backtest/profile_generator.py`): Sequence of `(time_min, depth_m, fO2, fHe)` tuples. Converts to libbuhlmann text-stream format via `to_buhlmann_format()`.
 - **`BuhlmannResult`** (`backtest/buhlmann_runner.py`): 16-compartment tissue tensions, ceilings, NDL times, max supersaturation. Output parsed from the `src/dive` binary's stdout (36 values per line).
-- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, per-timestep margins, critical compartment/slice, final NDL.
+- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, per-timestep margins, critical compartment/slice, final NDL. Risk scores use depth-dependent M-values derived from each slice's effective diffusion half-time.
+- **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with `a_values`/`b_values` arrays for Buhlmann-style M-value computation (`M = a + P_ambient/b`). Half-times derived from diffusion coefficient D, slice position, and permeability.
 - **`ComparisonResult`** (`backtest/comparator.py`): Wraps both results with computed `delta_risk` and `delta_ndl` properties.
 
 ### Model Details
@@ -68,11 +69,13 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 **Buhlmann** (`BuhlmannRunner`): Wraps the C binary via subprocess. Profile data is piped to stdin as `time pressure O2 He` lines. The binary outputs 36 values per line: time, pressure, 16x(N2, He) compartment tensions, ceiling, nodectime.
 
 **Slab Model** (`SlabModel`): Multi-compartment finite difference solver (Fick's Second Law). Default 3 compartments configured in `config.yaml`:
-- Spine (fast, D=0.002) - sensitive, lowest M-values
+- Spine (fast, D=0.002) - sensitive, fastest gas uptake
 - Muscle (medium, D=0.0005)
-- Joints (slow, D=0.0001) - traps gas, highest M-values
+- Joints (slow, D=0.0001) - traps gas, slowest uptake
 
 Each compartment is a 1D slab with: permeability barrier at slice[0] (blood-tissue interface), diffusion through interior slices, no-flux boundary at the core. Stability requires `k = (D * dt) / dx^2 <= 0.5`.
+
+**M-Values**: Depth-dependent, derived from each slice's effective diffusion half-time using Buhlmann empirical fits (`a = 2.0 * t_half^(-1/3)`, `b = 1.005 - t_half^(-1/2)`). M-value at any depth: `M = a + P_ambient / b`. Saturation limits (sat_limit_bottom/sat_limit_surface) scale M-values for conservatism tuning.
 
 ### Parallel Processing
 
@@ -80,7 +83,7 @@ Each compartment is a 1D slab with: permeability barrier at slice[0] (blood-tiss
 
 ### Configuration
 
-`config.yaml` holds slab model parameters (dt, dx, permeability, fO2, compartment definitions). `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority.
+`config.yaml` holds slab model parameters (dt, dx, permeability, fO2, sat_limit_bottom, sat_limit_surface, compartment definitions). M-values are derived from diffusion physics — only `D` and `slices` are needed per compartment. `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority.
 
 ### Output
 
@@ -95,4 +98,4 @@ Backtest runs save to `backtest_output/` or `backtest_output_full/`:
 - `main.py` is an older standalone single-compartment slab implementation; the `backtest/slab_model.py` multi-compartment version supersedes it
 - `con.py` is a standalone lzma+base64 file decompression utility, not part of the core pipeline
 - Risk scores from both models are normalized as M-value fractions: 1.0 = at limit, >1.0 = exceeded
-- NDL calculation uses a "shadow simulation" approach: clones tissue state and simulates forward minute-by-minute up to 99 minutes
+- NDL calculation uses a "shadow simulation" approach: clones tissue state, simulates forward at depth, and checks if tissue would exceed **surface** M-values (ascent-aware). Capped at 100 minutes to match libbuhlmann.

@@ -1,264 +1,280 @@
+"""
+SlabDive - Interactive Dive Profile Simulator
+
+Uses the multi-compartment Slab Diffusion model to simulate nitrogen uptake
+and offgassing for user-defined dive profiles. Supports square, multilevel,
+sawtooth, and custom profiles.
+
+Usage:
+    python main.py                          # Run with default settings below
+    python main.py --depth 30 --time 20     # Quick square profile override
+    python main.py --profile multilevel     # Use a multilevel profile
+"""
+
+import argparse
+
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import colormaps
+
+from backtest.slab_model import SlabModel
+from backtest.profile_generator import ProfileGenerator, DiveProfile
+
 
 # --- USER CONFIGURATION ---
-surface_altitude_m = 0  # Altitude of the water surface (0m = Sea Level)
-bottom_depth_m = 30  # Depth of the dive in meters
-dive_time_min = 30  # Bottom time in minutes
-fO2 = 0.21  # Breathing gas O2 fraction (Air = 0.21)
+# Edit these values to plan your dive, or override via CLI arguments.
 
-# --- M-VALUE PARAMETERS (Slab-based) ---
-# For a slab model, we create an array of M-values for each slice.
-# Surface/Fast slices (0) have HIGH tolerance (gas leaves quickly)
-# Core/Slow slices (49) have LOW tolerance (gas trapped longer)
-M_SURFACE_SLICE = 3.0  # Max tolerable ppN2 at slice 0 (fast tissue)
-M_CORE_SLICE = 1.5  # Max tolerable ppN2 at slice 49 (slow tissue)
+DIVE_CONFIG = {
+    "profile_type": "square",       # "square", "multilevel", "sawtooth", or "custom"
+    "depth_m": 30,                  # Depth for square/sawtooth profiles (meters)
+    "bottom_time_min": 30,          # Bottom time (minutes)
+    "fO2": 0.21,                    # Breathing gas O2 fraction (Air = 0.21)
 
-# --- PHYSICS CONSTANTS ---
-slices = 50  # Resolution (layers in the slab)
-D = 0.1  # Diffusion coefficient (Speed of gas moving)
-dt = 0.5  # Time step in seconds (smaller = more precise)
-dx = 1.0  # Distance between slices (arbitrary units)
+    # Multilevel profile: list of (depth_m, duration_min), deepest first
+    "multilevel_levels": [
+        (30, 10),
+        (20, 10),
+        (10, 10),
+    ],
 
-# --- PERMEABILITY BARRIER (The "Hidden" Knob) ---
-# Controls delay at blood-tissue interface. Higher = faster equilibration.
-# Set to None for perfect perfusion (instant, original behavior)
-# Typical range: 0.001 (slow barrier) to 0.1 (fast barrier)
-permeability = 0.0003  # Flux = Permeability * (Blood_Pressure - Surface_Pressure)
+    # Sawtooth profile settings
+    "sawtooth_min_depth_m": 10,     # Minimum depth during oscillations
+    "sawtooth_oscillations": 3,     # Number of depth oscillations
 
-# Stability Check: The finite difference method explodes if k > 0.5
-k = (D * dt) / (dx**2)
-if k > 0.5:
-    raise ValueError(
-        f"Stability warning! k={k:.4f} is > 0.5. Reduce dt or increase dx."
+    # Descent/ascent rates
+    "descent_rate": 20.0,           # m/min
+    "ascent_rate": 10.0,            # m/min (conservative)
+}
+
+
+def build_profile(config: dict) -> DiveProfile:
+    """Build a DiveProfile from user configuration."""
+    gen = ProfileGenerator(
+        descent_rate=config["descent_rate"],
+        ascent_rate=config["ascent_rate"],
     )
 
-# Create M-Value Array (the "Death Line")
-# Smooth curve from high tolerance (surface) to low tolerance (core)
-m_values = np.linspace(M_SURFACE_SLICE, M_CORE_SLICE, slices)
+    profile_type = config["profile_type"]
 
-
-# --- PRESSURE CALCULATIONS ---
-def get_atmospheric_pressure(altitude_m):
-    # Standard Barometric Formula to estimate pressure at altitude
-    # P = P0 * (1 - L*h/T0)^(gM/RL)
-    if altitude_m < 0:
-        return 1.01325  # Clamp to sea level if negative
-    return 1.01325 * (1 - 2.25577e-5 * altitude_m) ** 5.25588
-
-
-def get_hydrostatic_pressure(depth_m):
-    # Standard rule: 1 bar per 10m of depth
-    return depth_m / 10.0
-
-
-def get_ndl(current_slab, current_depth, dt, D, m_values, permeability=None):
-    """
-    Simulates the future to find how many minutes until we hit the limit.
-    Uses a "shadow simulation" - clones state and runs forward in time.
-    """
-    # 1. Create a "Shadow Slab" so we don't mess up the real dive
-    shadow_slab = current_slab.copy()
-
-    # Calculate pressure at current depth (we are staying here)
-    p_bottom = get_atmospheric_pressure(0) + (current_depth / 10.0)
-    ppN2_bottom = p_bottom * (1 - fO2)
-
-    # Stability constant
-    k_shadow = (D * dt) / (dx**2)
-
-    # 2. Look ahead up to 99 minutes
-    for minute in range(100):
-        # Run simulation for 60 seconds (one minute block)
-        steps_per_min = int(60 / dt)
-
-        for _ in range(steps_per_min):
-            # Update Boundary
-            if permeability is None:
-                shadow_slab[0] = ppN2_bottom
-            else:
-                flux = permeability * (ppN2_bottom - shadow_slab[0])
-                shadow_slab[0] += flux * dt
-            # Diffuse
-            shadow_slab[1:-1] += k_shadow * (
-                shadow_slab[:-2] - 2 * shadow_slab[1:-1] + shadow_slab[2:]
-            )
-            # No-flux deep end
-            shadow_slab[-1] = shadow_slab[-2]
-
-        # 3. The NDL Check:
-        # If ANY slice in the shadow slab is higher than its matching M-Value
-        if np.any(shadow_slab > m_values):
-            return minute  # We found the limit!
-
-    return 99  # More than 99 mins (essentially unlimited)
-
-
-# 1. Calculate Surface Pressure (Start)
-p_surface_bar = get_atmospheric_pressure(surface_altitude_m)
-ppN2_surface = p_surface_bar * (1 - fO2)
-
-# 2. Calculate Bottom Pressure (Dive)
-p_total_bottom = p_surface_bar + get_hydrostatic_pressure(bottom_depth_m)
-ppN2_bottom = p_total_bottom * (1 - fO2)
-
-print("--- DIVE PLAN ---")
-print(f"Altitude: {surface_altitude_m}m (Atm Pressure: {p_surface_bar:.2f} bar)")
-print(f"Depth: {bottom_depth_m}m (Total Pressure: {p_total_bottom:.2f} bar)")
-print(f"Breathing ppN2: Surface={ppN2_surface:.2f}, Bottom={ppN2_bottom:.2f}")
-
-# --- INITIALIZATION ---
-# The tissue starts fully saturated at surface pressure
-slab = np.full(slices, ppN2_surface)
-history = [slab.copy()]  # Save T=0 state
-max_tissue_load = []  # Track max pressure across all slices
-time_points_min = []  # Time in minutes for plotting
-
-# --- SIMULATION LOOP ---
-# Convert minutes to seconds
-dive_steps = int((dive_time_min * 60) / dt)
-
-for t in range(dive_steps):
-    # 1. Update Boundary Condition (Blood-Tissue Interface)
-    if permeability is None:
-        # Perfect Perfusion: surface instantly matches blood
-        slab[0] = ppN2_bottom
+    if profile_type == "square":
+        return gen.generate_square(
+            depth=config["depth_m"],
+            bottom_time=config["bottom_time_min"],
+            fO2=config["fO2"],
+        )
+    elif profile_type == "multilevel":
+        return gen.generate_multilevel(
+            levels=config["multilevel_levels"],
+            fO2=config["fO2"],
+        )
+    elif profile_type == "sawtooth":
+        return gen.generate_sawtooth(
+            max_depth=config["depth_m"],
+            min_depth=config["sawtooth_min_depth_m"],
+            total_time=config["bottom_time_min"],
+            oscillations=config["sawtooth_oscillations"],
+            fO2=config["fO2"],
+        )
     else:
-        # Permeability Barrier: adds delay at interface
-        # Flux = Permeability * (Blood_Pressure - Surface_Pressure)
-        flux = permeability * (ppN2_bottom - slab[0])
-        slab[0] += flux * dt
+        raise ValueError(
+            f"Unknown profile type: {profile_type}. "
+            "Use 'square', 'multilevel', or 'sawtooth'."
+        )
 
-    # 2. Diffusion (Finite Difference Method)
-    # The math: New = Old + k * (Left_Neighbor - 2*Me + Right_Neighbor)
-    # We use vectorization (slab[1:-1]) to do all slices at once for speed
-    slab[1:-1] += k * (slab[:-2] - 2 * slab[1:-1] + slab[2:])
 
-    # 3. No-Flux Boundary at the deep end
-    # (Gas hits the back of the cartilage and stops, or bounces back)
-    slab[-1] = slab[-2]
+def print_dive_plan(profile: DiveProfile, model: SlabModel) -> None:
+    """Print dive plan summary before simulation."""
+    p_surface = model._get_atmospheric_pressure()
+    p_bottom = p_surface + profile.max_depth / 10.0
+    ppn2_surface = p_surface * (1 - model.f_o2)
+    ppn2_bottom = p_bottom * (1 - model.f_o2)
 
-    # Save state every 60 seconds (simulated time)
-    if (t * dt) % 60 < dt:
-        history.append(slab.copy())
-        max_tissue_load.append(np.max(slab))
-        time_points_min.append((t * dt) / 60)
+    print("--- DIVE PLAN ---")
+    print(f"Profile: {profile.name}")
+    print(f"Max depth: {profile.max_depth:.0f}m")
+    print(f"Bottom time: {profile.bottom_time:.0f} min")
+    print(f"Gas mix: {model.f_o2 * 100:.0f}% O2 (fO2={model.f_o2})")
+    print(f"Altitude: {model.surface_altitude_m:.0f}m (Atm: {p_surface:.3f} bar)")
+    print(f"Bottom pressure: {p_bottom:.2f} bar")
+    print(f"ppN2: surface={ppn2_surface:.3f}, bottom={ppn2_bottom:.3f} bar")
+    print(f"Compartments: {', '.join(c.name for c in model.compartments)}")
+    print(f"Sat limits: bottom={model.sat_limit_bottom}, surface={model.sat_limit_surface}")
 
-# --- M-VALUE CHECK (Slab-based) ---
-# In the slab model, each slice has its own M-value limit.
-# NDL is exceeded when ANY slice exceeds its corresponding M-value.
 
-print("\n--- M-VALUE LIMITS (Slab Array) ---")
-print(f"M-value at Slice 0 (fast/surface): {m_values[0]:.2f} bar")
-print(f"M-value at Slice {slices - 1} (slow/core): {m_values[-1]:.2f} bar")
+def print_results(result) -> None:
+    """Print simulation results."""
+    print("\n--- SIMULATION RESULTS ---")
+    print(f"Max tissue load: {result.max_tissue_load:.3f} bar")
+    print(f"Max supersaturation: {result.max_supersaturation:.2%}")
+    print(f"Critical compartment: {result.critical_compartment} (slice {result.critical_slice})")
+    print(f"Min margin to M-value: {result.min_margin:.3f} bar")
 
-# Check which slice is closest to its limit
-margin = m_values - slab  # How much headroom each slice has
-min_margin_idx = np.argmin(margin)
-min_margin = margin[min_margin_idx]
+    if result.exceeded_limit:
+        print("\nWARNING: M-value limit EXCEEDED!")
+        print("Mandatory decompression stops required before surfacing.")
+    else:
+        print(f"\nAll compartments within limits. NDL remaining: {result.final_ndl:.0f} min")
 
-print(f"\nCritical slice: {min_margin_idx} (margin: {min_margin:.3f} bar)")
 
-# Check if any slice exceeded its M-value
-exceeded = np.any(slab > m_values)
-if exceeded:
-    exceeded_slices = np.where(slab > m_values)[0]
-    print(f"\n⚠️  WARNING: Slices {exceeded_slices} EXCEED their M-values!")
-    print("   Mandatory decompression stops required before surfacing.")
-else:
-    # Calculate NDL from current state
-    current_ndl = get_ndl(slab, bottom_depth_m, dt, D, m_values, permeability)
-    print(f"\n✓ All slices within limits. NDL remaining: {current_ndl} min")
+def plot_results(profile: DiveProfile, result, model: SlabModel) -> None:
+    """Visualize dive profile and tissue loading."""
+    compartments = model.compartments
+    num_compartments = len(compartments)
 
-# --- VISUALIZATION ---
-history_array = np.array(history)
-max_tissue_load = np.array(max_tissue_load)
-time_points_min = np.array(time_points_min)
-
-fig, (ax1, ax2) = plt.subplots(
-    2, 1, figsize=(10, 10), gridspec_kw={"height_ratios": [2, 1]}
-)
-
-# --- TOP PLOT: Heatmap ---
-im = ax1.imshow(
-    history_array.T,
-    aspect="auto",
-    cmap="hot",
-    origin="lower",
-    extent=[0, dive_time_min, 0, slices],
-)
-plt.colorbar(im, ax=ax1, label="Partial Pressure N2 (bar)")
-ax1.set_xlabel("Dive Time (minutes)")
-ax1.set_ylabel("Depth into Tissue Slab (arbitrary units)")
-ax1.set_title(f"Nitrogen Diffusion: {bottom_depth_m}m Dive for {dive_time_min} mins")
-
-# Add contour lines for readability
-ax1.contour(
-    history_array.T,
-    levels=10,
-    colors="black",
-    alpha=0.3,
-    origin="lower",
-    extent=[0, dive_time_min, 0, slices],
-)
-# --- BOTTOM PLOT: Slab Profile vs M-Value Array ---
-# Plot the final slab state against the M-value limit curve
-slice_indices = np.arange(slices)
-ax2.plot(slice_indices, slab, "b-", linewidth=2, label="Current Gas Load")
-ax2.plot(slice_indices, m_values, "r--", linewidth=2, label="M-Value Limit")
-ax2.axhline(
-    y=ppN2_surface,
-    color="green",
-    linestyle="-",
-    linewidth=1,
-    alpha=0.5,
-    label=f"Surface ppN2 = {ppN2_surface:.2f} bar",
-)
-ax2.axhline(
-    y=ppN2_bottom,
-    color="orange",
-    linestyle=":",
-    linewidth=1,
-    alpha=0.5,
-    label=f"Bottom ppN2 = {ppN2_bottom:.2f} bar",
-)
-
-# Shade the danger zone (above M-value curve)
-ax2.fill_between(
-    slice_indices,
-    m_values,
-    np.max(m_values) * 1.2,
-    color="red",
-    alpha=0.1,
-    label="Deco Required Zone",
-)
-
-# Mark any slices that exceeded their M-value
-exceeded_slices = np.where(slab > m_values)[0]
-if len(exceeded_slices) > 0:
-    ax2.scatter(
-        exceeded_slices,
-        slab[exceeded_slices],
-        color="red",
-        s=50,
-        zorder=5,
-        label="Exceeded!",
-    )
-    ax2.annotate(
-        f"Limit exceeded\nat slice {exceeded_slices[0]}",
-        xy=(exceeded_slices[0], slab[exceeded_slices[0]]),
-        xytext=(exceeded_slices[0] + 5, slab[exceeded_slices[0]] + 0.2),
-        fontsize=9,
-        color="red",
-        arrowprops=dict(arrowstyle="->", color="red"),
+    # Layout: depth profile + one heatmap per compartment + gas load vs M-values
+    num_rows = 2 + num_compartments
+    _fig, axes = plt.subplots(
+        num_rows, 1, figsize=(12, 4 * num_rows),
+        gridspec_kw={"height_ratios": [1] + [1.5] * num_compartments + [1.5]},
     )
 
-ax2.set_xlabel("Slice Index (0=Surface/Fast, 49=Core/Slow)")
-ax2.set_ylabel("Partial Pressure N2 (bar)")
-ax2.set_title("Slab Gas Load vs. M-Value Array (after dive)")
-ax2.legend(loc="upper right")
-ax2.set_xlim(0, slices - 1)
-ax2.grid(True, alpha=0.3)
+    # --- Row 0: Depth Profile ---
+    ax_depth = axes[0]
+    ax_depth.plot(result.times, result.depths, "b-", linewidth=2)
+    ax_depth.set_ylabel("Depth (m)")
+    ax_depth.set_xlabel("Time (min)")
+    ax_depth.set_title(f"Dive Profile: {profile.name}")
+    ax_depth.invert_yaxis()
+    ax_depth.grid(True, alpha=0.3)
+    ax_depth.fill_between(result.times, result.depths, alpha=0.15, color="blue")
 
-plt.tight_layout()
-plt.show()
+    # --- Rows 1..N: Heatmaps per compartment ---
+    for c_idx, compartment in enumerate(compartments):
+        ax = axes[1 + c_idx]
+
+        # Extract this compartment's history: slab_history shape is [time, compartment, slices]
+        # But slab_history stores lists of arrays, so index accordingly
+        compartment_history = result.slab_history[:, c_idx, :]
+
+        im = ax.imshow(
+            compartment_history.T,
+            aspect="auto",
+            cmap="hot",
+            origin="lower",
+            extent=[result.times[0], result.times[-1], 0, compartment.slices],
+        )
+        plt.colorbar(im, ax=ax, label="ppN2 (bar)")
+        ax.set_xlabel("Time (min)")
+        ax.set_ylabel("Slice (0=surface)")
+        ax.set_title(f"N2 Diffusion: {compartment.name} (D={compartment.D})")
+        ax.contour(
+            compartment_history.T,
+            levels=8,
+            colors="black",
+            alpha=0.2,
+            origin="lower",
+            extent=[result.times[0], result.times[-1], 0, compartment.slices],
+        )
+
+    # --- Bottom Row: Gas Load vs M-Values for all compartments ---
+    ax_mv = axes[-1]
+    p_surface = model._get_atmospheric_pressure()
+
+    cmap = colormaps["tab10"]
+    colors = cmap(np.linspace(0, 1, num_compartments))
+
+    for c_idx, compartment in enumerate(compartments):
+        color = colors[c_idx]
+        slice_indices = np.arange(compartment.slices)
+        m_vals = compartment.get_limited_m_values(p_surface, model.sat_limit_surface)
+
+        ax_mv.plot(
+            slice_indices + c_idx * compartment.slices,
+            compartment.slab,
+            color=color, linewidth=2,
+            label=f"{compartment.name} load",
+        )
+        ax_mv.plot(
+            slice_indices + c_idx * compartment.slices,
+            m_vals,
+            color=color, linewidth=2, linestyle="--",
+            label=f"{compartment.name} M-limit",
+        )
+
+        # Mark exceeded slices
+        exceeded = np.where(compartment.slab > m_vals)[0]
+        if len(exceeded) > 0:
+            ax_mv.scatter(
+                exceeded + c_idx * compartment.slices,
+                compartment.slab[exceeded],
+                color="red", s=50, zorder=5,
+            )
+
+        # Separator line between compartments
+        if c_idx < num_compartments - 1:
+            sep_x = (c_idx + 1) * compartment.slices
+            ax_mv.axvline(x=sep_x, color="gray", linestyle=":", alpha=0.5)
+
+    # Reference lines
+    ppn2_surface = p_surface * (1 - model.f_o2)
+    total_slices = sum(c.slices for c in compartments)
+    ax_mv.axhline(
+        y=ppn2_surface, color="green", linestyle="-", linewidth=1, alpha=0.5,
+        label=f"Surface ppN2 = {ppn2_surface:.2f}",
+    )
+
+    ax_mv.set_xlabel("Slice Index (grouped by compartment)")
+    ax_mv.set_ylabel("ppN2 (bar)")
+    ax_mv.set_title("Final Gas Load vs. Surface M-Value Limits")
+    ax_mv.legend(loc="upper right", fontsize=8)
+    ax_mv.set_xlim(0, total_slices)
+    ax_mv.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for quick overrides."""
+    parser = argparse.ArgumentParser(
+        description="SlabDive - Slab Diffusion Dive Simulator",
+    )
+    parser.add_argument("--depth", type=float, help="Dive depth in meters")
+    parser.add_argument("--time", type=float, help="Bottom time in minutes")
+    parser.add_argument("--fO2", type=float, help="O2 fraction (e.g. 0.32 for EAN32)")
+    parser.add_argument(
+        "--profile", choices=["square", "multilevel", "sawtooth"],
+        help="Profile type",
+    )
+    parser.add_argument(
+        "--config", type=str, default="config.yaml",
+        help="Path to model config YAML (default: config.yaml)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    # Apply CLI overrides to config
+    config = DIVE_CONFIG.copy()
+    if args.depth is not None:
+        config["depth_m"] = args.depth
+    if args.time is not None:
+        config["bottom_time_min"] = args.time
+    if args.fO2 is not None:
+        config["fO2"] = args.fO2
+    if args.profile is not None:
+        config["profile_type"] = args.profile
+
+    # Build profile
+    profile = build_profile(config)
+
+    # Initialize model from config
+    model = SlabModel(config_path=args.config, f_o2=config["fO2"])
+
+    # Print plan
+    print_dive_plan(profile, model)
+
+    # Run simulation
+    result = model.run(profile)
+
+    # Print results
+    print_results(result)
+
+    # Visualize
+    plot_results(profile, result, model)
+
+
+if __name__ == "__main__":
+    main()
