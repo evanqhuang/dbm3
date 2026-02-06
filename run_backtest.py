@@ -7,6 +7,7 @@ Usage:
     python run_backtest.py --quick            # Quick test with fewer profiles
     python run_backtest.py --full             # Full test with 50k+ profiles
     python run_backtest.py --profile 30 20    # Test single profile (30m, 20min)
+    python run_backtest.py --real-data        # Run backtest on scraped dive profiles
 """
 
 import argparse
@@ -147,6 +148,77 @@ def run_full_test():
     print(f"\nPlots saved to: backtest_output_full/")
 
 
+def run_real_data_test():
+    """Run backtest on scraped real dive profiles."""
+    print("\n" + "=" * 60)
+    print("REAL DATA BACKTEST")
+    print("=" * 60)
+
+    try:
+        from scraping.loader import load_profiles
+    except ImportError as e:
+        print(f"ERROR: Failed to import scraping.loader: {e}")
+        return
+
+    # Load scraped profiles
+    profiles = load_profiles(data_dir="data/parsed")
+
+    if not profiles:
+        print("\nERROR: No dive profiles found in data/parsed/")
+        print("Please run the scraper first to collect data:")
+        print("  python run_scraper.py mine")
+        return
+
+    print(f"\nLoaded {len(profiles)} real dive profiles")
+
+    # Run comparison
+    comparator = ModelComparator()
+    print("\nRunning model comparisons (this may take a while)...")
+    results = comparator.compare_batch(profiles, verbose=True)
+
+    # Generate report
+    report = comparator.generate_report(results)
+
+    # Save results
+    output_dir = "backtest_output_real"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save detailed results as CSV
+    import csv
+    csv_path = os.path.join(output_dir, "results_detailed.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "profile_name", "max_depth", "bottom_time",
+            "buhlmann_risk", "slab_risk", "delta_risk",
+            "buhlmann_ndl", "slab_ndl", "delta_ndl",
+        ])
+        for r in results:
+            if r.buhlmann_result and r.slab_result:
+                writer.writerow([
+                    r.profile.name,
+                    r.profile.max_depth,
+                    r.profile.bottom_time,
+                    r.buhlmann_result.risk_score,
+                    r.slab_result.risk_score,
+                    r.delta_risk,
+                    r.buhlmann_result.min_ndl,
+                    r.slab_result.final_ndl,
+                    r.delta_ndl,
+                ])
+
+    # Save report as JSON
+    import json
+    json_path = os.path.join(output_dir, "report.json")
+    with open(json_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    print_report(report)
+    print(f"\nResults saved to: {output_dir}/")
+    print(f"  - {csv_path}")
+    print(f"  - {json_path}")
+
+
 def print_report(report: dict):
     """Print formatted report."""
     print("\n" + "=" * 60)
@@ -219,6 +291,9 @@ def main():
         metavar=("DEPTH", "TIME"),
         help="Test single profile at DEPTH (m) for TIME (min)",
     )
+    parser.add_argument(
+        "--real-data", action="store_true", help="Run backtest on scraped dive profiles"
+    )
 
     args = parser.parse_args()
 
@@ -235,6 +310,8 @@ def main():
         run_quick_test()
     elif args.full:
         run_full_test()
+    elif args.real_data:
+        run_real_data_test()
     else:
         run_default_test()
 

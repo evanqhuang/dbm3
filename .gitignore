@@ -107,9 +107,14 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
+# Secrets
+.env
+
 # Custom for this project
 backtest/__pycache__/
 backtest_output/
 backtest_output_full/
+backtest_output_real/
+data/
 *.pyc
 __pycache__/
