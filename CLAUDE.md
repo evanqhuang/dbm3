@@ -60,8 +60,8 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 - **`DiveProfile`** (`backtest/profile_generator.py`): Sequence of `(time_min, depth_m, fO2, fHe)` tuples. Converts to libbuhlmann text-stream format via `to_buhlmann_format()`.
 - **`BuhlmannResult`** (`backtest/buhlmann_runner.py`): 16-compartment tissue tensions, ceilings, NDL times, max supersaturation. Output parsed from the `src/dive` binary's stdout (36 values per line).
-- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, per-timestep margins, critical compartment/slice, final NDL. Risk scores use depth-dependent M-values derived from each slice's effective diffusion half-time.
-- **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with `a_values`/`b_values` arrays for Buhlmann-style M-value computation (`M = a + P_ambient/b`). Half-times derived from diffusion coefficient D, slice position, and permeability.
+- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, critical compartment name, final NDL, max critical volume ratio. Risk scores use the critical volume approach: `risk = excess_gas / V_crit`.
+- **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with diffusion coefficient D, slice count, and `v_crit` (critical volume threshold calibrated against Buhlmann NDLs at 30m reference depth).
 - **`ComparisonResult`** (`backtest/comparator.py`): Wraps both results with computed `delta_risk` and `delta_ndl` properties.
 
 ### Model Details
@@ -73,9 +73,14 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 - Muscle (medium, D=0.0005)
 - Joints (slow, D=0.0001) - traps gas, slowest uptake
 
-Each compartment is a 1D slab with: permeability barrier at slice[0] (blood-tissue interface), diffusion through interior slices, no-flux boundary at the core. Stability requires `k = (D * dt) / dx^2 <= 0.5`.
+Each compartment is a 1D slab with: perfect perfusion at slice[0] (blood-tissue interface instantly matches ambient ppN2), diffusion through interior slices, no-flux boundary at the core. Stability requires `k = (D * dt) / dx^2 <= 0.5`.
 
-**M-Values**: Depth-dependent, derived from each slice's effective diffusion half-time using Buhlmann empirical fits (`a = 2.0 * t_half^(-1/3)`, `b = 1.005 - t_half^(-1/2)`). M-value at any depth: `M = a + P_ambient / b`. Saturation limits (sat_limit_bottom/sat_limit_surface) scale M-values for conservatism tuning.
+**Critical Volume Risk** (Hennessy & Hempleman): Risk is measured by total excess dissolved gas across the slab, compared to a per-compartment threshold:
+- `excess_gas = sum(max(0, slab[i] - P_surface_equil) * dx)` — total gas above surface equilibrium
+- `risk = excess_gas / V_crit` — 1.0 = at limit, >1.0 = exceeded
+- `V_crit` per compartment is calibrated at 30m reference depth against Buhlmann ZH-L16C NDLs
+- Evaluated at end of profile (post-ascent), not per-timestep, to avoid ascent transient artifacts
+- NDL calculation simulates ascent to surface before checking excess gas (ascent-aware)
 
 ### Parallel Processing
 
@@ -83,7 +88,7 @@ Each compartment is a 1D slab with: permeability barrier at slice[0] (blood-tiss
 
 ### Configuration
 
-`config.yaml` holds slab model parameters (dt, dx, permeability, fO2, sat_limit_bottom, sat_limit_surface, compartment definitions). M-values are derived from diffusion physics — only `D` and `slices` are needed per compartment. `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority.
+`config.yaml` holds slab model parameters (dt, dx, permeability, fO2, compartment definitions with D, slices, and v_crit). `permeability: null` enables perfect perfusion (classic Hempleman slab). `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority. `calibrate_critical_volume.py` recalibrates v_crit values against Buhlmann NDLs.
 
 ### Output
 
@@ -97,5 +102,5 @@ Backtest runs save to `backtest_output/` or `backtest_output_full/`:
 - `libbuhlmann/` is a git submodule pointing to `https://github.com/AquaBSD/libbuhlmann`
 - `main.py` is an older standalone single-compartment slab implementation; the `backtest/slab_model.py` multi-compartment version supersedes it
 - `con.py` is a standalone lzma+base64 file decompression utility, not part of the core pipeline
-- Risk scores from both models are normalized as M-value fractions: 1.0 = at limit, >1.0 = exceeded
-- NDL calculation uses a "shadow simulation" approach: clones tissue state, simulates forward at depth, and checks if tissue would exceed **surface** M-values (ascent-aware). Capped at 100 minutes to match libbuhlmann.
+- Risk scores from both models are normalized: 1.0 = at limit, >1.0 = exceeded. Buhlmann uses M-value fractions; Slab uses critical volume ratios (excess_gas / V_crit).
+- NDL calculation uses a "shadow simulation" approach: clones tissue state, simulates forward at depth, then simulates ascent to surface before checking if excess gas exceeds V_crit. Capped at 100 minutes to match libbuhlmann.

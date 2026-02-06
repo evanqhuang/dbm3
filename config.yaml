@@ -3,28 +3,30 @@
 # Simulation parameters
 dt: 0.5           # Time step in seconds (smaller = more precise)
 dx: 1.0           # Distance between slices (arbitrary units)
-permeability: 0.01  # Blood-tissue barrier permeability
 f_o2: 0.21        # Breathing gas O2 fraction (Air = 0.21)
 surface_altitude_m: 0.0  # Altitude of the water surface (0m = Sea Level)
 
-# Saturation Limits (conservatism tuning)
-# 1.0/1.0 = no conservatism (raw M-values)
-# 0.3/0.85 = 30/85 (aggressive recreational)
-# 0.2/0.7 = 20/70 (conservative technical)
-sat_limit_bottom: 1.0
-sat_limit_surface: 1.0
+# Perfusion model: null = perfect perfusion (classic Hempleman slab).
+# With perfect perfusion, the blood-tissue interface (slice 0) instantly
+# matches ambient ppN2. Excess gas comes from interior diffusion only.
+permeability: null
 
 # Compartment definitions
-# M-values are derived from D, dx, and permeability (Buhlmann-style a/b parameters)
+# v_crit: critical volume threshold (bar*distance)
+#   Calibrated at 30m reference depth against Buhlmann ZH-L16C NDL (28min).
+#   At the NDL, the controlling compartment has excess_gas = v_crit (risk = 1.0).
 compartments:
   - name: "Spine"      # Fast, Sensitive
     D: 0.002           # Diffusion coefficient
     slices: 20         # Number of slices
+    v_crit: 3.6001     # Excess gas at 30m/28min
 
   - name: "Muscle"     # Medium
     D: 0.0005          # Diffusion coefficient
     slices: 20         # Number of slices
+    v_crit: 1.4735     # Excess gas at 30m/28min
 
   - name: "Joints"     # Slow, traps gas
     D: 0.0001          # Diffusion coefficient
     slices: 20         # Number of slices
+    v_crit: 0.3902     # Excess gas at 30m/28min

@@ -51,12 +51,13 @@ def test_single_profile(depth: float, time: float):
     # Test Slab
     print("\n--- Slab Model ---")
     try:
-        slab = SlabModel()
+        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+        slab = SlabModel(config_path=config_path)
         slab_result = slab.run(profile)
         print(f"Max tissue load: {slab_result.max_tissue_load:.3f} bar")
-        print(f"Min margin: {slab_result.min_margin:.3f} bar")
-        print(f"Critical slice: {slab_result.critical_slice}")
-        print(f"Max supersaturation: {slab_result.max_supersaturation:.2%}")
+        print(f"Min margin: {slab_result.min_margin:.3f}")
+        print(f"Critical compartment: {slab_result.critical_compartment}")
+        print(f"Max CV ratio: {slab_result.max_cv_ratio:.4f}")
         print(f"Final NDL: {slab_result.final_ndl:.1f} min")
         print(f"Exceeded limit: {slab_result.exceeded_limit}")
     except Exception as e:

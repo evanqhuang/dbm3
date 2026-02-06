@@ -35,7 +35,7 @@ def load_csv_data():
     buhlmann_ndls = []
     slab_ndls = []
     delta_ndls = []
-    slab_critical_slices = []
+    slab_critical_compartments = []
 
     with open(CSV_PATH, 'r') as f:
         reader = csv.DictReader(f)
@@ -49,7 +49,7 @@ def load_csv_data():
             buhlmann_ndls.append(float(row['buhlmann_ndl']))
             slab_ndls.append(float(row['slab_ndl']))
             delta_ndls.append(float(row['delta_ndl']))
-            slab_critical_slices.append(int(row['slab_critical_slice']))
+            slab_critical_compartments.append(row['slab_critical_compartment'])
 
     return {
         'profile_name': profile_names,
@@ -61,7 +61,7 @@ def load_csv_data():
         'buhlmann_ndl': np.array(buhlmann_ndls),
         'slab_ndl': np.array(slab_ndls),
         'delta_ndl': np.array(delta_ndls),
-        'slab_critical_slice': np.array(slab_critical_slices),
+        'slab_critical_compartment': np.array(slab_critical_compartments),
     }
 
 
@@ -253,10 +253,10 @@ def print_top_divergent_profiles(data):
               f"{data['slab_ndl'][idx]:>8.2f} {data['delta_ndl'][idx]:>10.2f}")
 
 
-def print_critical_slice_analysis(data):
-    """Analyze critical slice distribution across depth bins."""
+def print_critical_compartment_analysis(data):
+    """Analyze critical compartment distribution across depth bins."""
     print("\n" + "=" * 60)
-    print("CRITICAL SLICE ANALYSIS")
+    print("CRITICAL COMPARTMENT ANALYSIS")
     print("=" * 60)
 
     bins = [
@@ -268,22 +268,22 @@ def print_critical_slice_analysis(data):
 
     for name, dmin, dmax in bins:
         mask = (data['depth'] >= dmin) & (data['depth'] <= dmax)
-        slices = data['slab_critical_slice'][mask]
+        compartments = data['slab_critical_compartment'][mask]
 
-        if len(slices) == 0:
+        if len(compartments) == 0:
             print(f"\n{name}: No data")
             continue
 
-        unique_slices, counts = np.unique(slices, return_counts=True)
-        total = len(slices)
+        unique_compartments, counts = np.unique(compartments, return_counts=True)
+        total = len(compartments)
 
         print(f"\n{name}:")
-        print(f"{'Slice':>8} {'Count':>10} {'Percentage':>12}")
-        print("-" * 35)
+        print(f"{'Compartment':>12} {'Count':>10} {'Percentage':>12}")
+        print("-" * 39)
 
-        for slice_val, count in zip(unique_slices, counts):
+        for comp, count in zip(unique_compartments, counts):
             pct = 100 * count / total
-            print(f"{slice_val:>8} {count:>10} {pct:>11.1f}%")
+            print(f"{comp:>12} {count:>10} {pct:>11.1f}%")
 
 
 def print_regime_classification(data):
@@ -430,7 +430,7 @@ def main():
     print_time_binned_analysis(data)
     boundaries = print_divergence_boundaries(data)
     print_top_divergent_profiles(data)
-    print_critical_slice_analysis(data)
+    print_critical_compartment_analysis(data)
     print_regime_classification(data)
 
     # Plots

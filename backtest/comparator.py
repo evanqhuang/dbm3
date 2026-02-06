@@ -5,6 +5,7 @@ Runs batch comparisons and generates divergence matrices to identify
 where the models differ in their risk predictions.
 """
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
@@ -158,8 +159,7 @@ def _run_slab_single(slab_params: dict, profile: DiveProfile) -> Optional[SlabRe
             permeability=slab_params["permeability"],
             f_o2=slab_params["f_o2"],
             surface_altitude_m=slab_params["surface_altitude_m"],
-            sat_limit_bottom=slab_params.get("sat_limit_bottom", 1.0),
-            sat_limit_surface=slab_params.get("sat_limit_surface", 1.0),
+            critical_volume_k=slab_params.get("critical_volume_k", 1.0),
         )
         return model.run(profile)
     except Exception:
@@ -238,10 +238,13 @@ class ModelComparator:
     on risk assessments.
     """
 
+    _DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
+
     def __init__(
         self,
         buhlmann_runner: Optional[BuhlmannRunner] = None,
         slab_model: Optional[SlabModel] = None,
+        config_path: Optional[str] = None,
     ):
         """
         Initialize the comparator.
@@ -249,9 +252,14 @@ class ModelComparator:
         Args:
             buhlmann_runner: BuhlmannRunner instance (auto-created if None)
             slab_model: SlabModel instance (auto-created if None)
+            config_path: Path to config.yaml for SlabModel (auto-detected if None)
         """
         self.buhlmann = buhlmann_runner or BuhlmannRunner()
-        self.slab = slab_model or SlabModel()
+        if slab_model is not None:
+            self.slab = slab_model
+        else:
+            cfg = config_path or self._DEFAULT_CONFIG
+            self.slab = SlabModel(config_path=cfg) if os.path.exists(cfg) else SlabModel()
         self.generator = ProfileGenerator()
 
     def compare_profile(self, profile: DiveProfile) -> ComparisonResult:
@@ -385,8 +393,7 @@ class ModelComparator:
             "permeability": self.slab.permeability,
             "f_o2": self.slab.f_o2,
             "surface_altitude_m": self.slab.surface_altitude_m,
-            "sat_limit_bottom": self.slab.sat_limit_bottom,
-            "sat_limit_surface": self.slab.sat_limit_surface,
+            "critical_volume_k": self.slab.critical_volume_k,
         }
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {
@@ -879,7 +886,7 @@ def run_full_backtest(
                     "buhlmann_ceiling",
                     "buhlmann_requires_deco",
                     "slab_exceeded_limit",
-                    "slab_critical_slice",
+                    "slab_critical_compartment",
                 ]
             )
             for result in results:
@@ -898,7 +905,7 @@ def run_full_backtest(
                             f"{result.buhlmann_result.max_ceiling:.4f}",
                             result.buhlmann_result.requires_deco,
                             result.slab_result.exceeded_limit,
-                            result.slab_result.critical_slice,
+                            result.slab_result.critical_compartment,
                         ]
                     )
 
