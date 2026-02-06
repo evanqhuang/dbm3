@@ -11,22 +11,41 @@ surface_altitude_m: 0.0  # Altitude of the water surface (0m = Sea Level)
 # matches ambient ppN2. Excess gas comes from interior diffusion only.
 permeability: null
 
+# Conservatism factor for v_crit scaling.
+# 1.0 = no adjustment (match Buhlmann NDLs exactly)
+# 0.85 = 15% more conservative (recommended for recreational diving)
+conservatism: 1.0
+
+# Decompression planning parameters
+deco:
+  stop_increment: 3.0       # Stop depth increment (meters)
+  last_stop_depth: 3.0      # Shallowest stop depth (meters)
+  ascent_rate: 10.0          # Default ascent rate (m/min)
+  max_stop_time: 120         # Maximum time at any single stop (minutes)
+
 # Compartment definitions
 # v_crit: critical volume threshold (bar*distance)
 #   Calibrated at 30m reference depth against Buhlmann ZH-L16C NDL (28min).
 #   At the NDL, the controlling compartment has excess_gas = v_crit (risk = 1.0).
+# g_crit: critical gradient at surface (bar) for ceiling/deco calculations.
+#   Uses boundary gradient approach (Hennessy): slab[1] tension at tissue-blood
+#   interface vs ambient ppN2. Calibrated as slab[1] - ppN2_surface at 30m NDL.
+#   At depth, g_crit scales with ambient pressure (Boyle's Law compression).
 compartments:
   - name: "Spine"      # Fast, Sensitive
     D: 0.002           # Diffusion coefficient
     slices: 20         # Number of slices
     v_crit: 3.6001     # Excess gas at 30m/28min
+    g_crit: 1.3406     # Boundary gradient at 30m NDL
 
   - name: "Muscle"     # Medium
     D: 0.0005          # Diffusion coefficient
     slices: 20         # Number of slices
     v_crit: 1.4735     # Excess gas at 30m/28min
+    g_crit: 0.9827     # Boundary gradient at 30m NDL
 
   - name: "Joints"     # Slow, traps gas
     D: 0.0001          # Diffusion coefficient
     slices: 20         # Number of slices
     v_crit: 0.3902     # Excess gas at 30m/28min
+    g_crit: 0.3440     # Boundary gradient at 30m NDL

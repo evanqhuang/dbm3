@@ -225,6 +225,50 @@ class ComparisonResult:
         return self.slab_ndl - self.buhlmann_ndl
 
     @property
+    def buhlmann_ceiling(self) -> float:
+        """
+        Buhlmann ceiling depth in meters.
+        Converts max ceiling from bar to depth: max(0, (ceiling_bar - P_surface) * 10)
+        """
+        if self.buhlmann_result is None:
+            return float("nan")
+        P_surface = 1.01325  # bar at sea level
+        ceiling_depth = max(0, (self.buhlmann_result.max_ceiling - P_surface) * 10)
+        return ceiling_depth
+
+    @property
+    def slab_ceiling(self) -> float:
+        """Slab model ceiling depth in meters."""
+        if self.slab_result is None:
+            return float("nan")
+        return self.slab_result.ceiling_at_bottom
+
+    @property
+    def delta_ceiling(self) -> float:
+        """
+        Ceiling divergence: Slab - Buhlmann (meters).
+        Positive = Slab requires deeper stops (more conservative)
+        Negative = Buhlmann requires deeper stops (more conservative)
+        """
+        if self.buhlmann_result is None or self.slab_result is None:
+            return float("nan")
+        return self.slab_ceiling - self.buhlmann_ceiling
+
+    @property
+    def slab_requires_deco(self) -> bool:
+        """True if slab model ceiling exceeds surface (requires deco stops)."""
+        if self.slab_result is None:
+            return False
+        return self.slab_ceiling > 0
+
+    @property
+    def buhlmann_requires_deco(self) -> bool:
+        """True if Buhlmann ceiling exceeds surface (requires deco stops)."""
+        if self.buhlmann_result is None:
+            return False
+        return self.buhlmann_ceiling > 0
+
+    @property
     def is_valid(self) -> bool:
         """True if both models produced valid results."""
         return self.buhlmann_result is not None and self.slab_result is not None
@@ -473,6 +517,9 @@ class ModelComparator:
             "delta_ndl": np.full((n_times, n_depths), np.nan),
             "buhlmann_ndl": np.full((n_times, n_depths), np.nan),
             "slab_ndl": np.full((n_times, n_depths), np.nan),
+            "delta_ceiling": np.full((n_times, n_depths), np.nan),
+            "buhlmann_ceiling": np.full((n_times, n_depths), np.nan),
+            "slab_ceiling": np.full((n_times, n_depths), np.nan),
         }
 
         for idx, result in enumerate(results):
@@ -486,6 +533,9 @@ class ModelComparator:
                 matrices["delta_ndl"][time_idx, depth_idx] = result.delta_ndl
                 matrices["buhlmann_ndl"][time_idx, depth_idx] = result.buhlmann_ndl
                 matrices["slab_ndl"][time_idx, depth_idx] = result.slab_ndl
+                matrices["delta_ceiling"][time_idx, depth_idx] = result.delta_ceiling
+                matrices["buhlmann_ceiling"][time_idx, depth_idx] = result.buhlmann_ceiling
+                matrices["slab_ceiling"][time_idx, depth_idx] = result.slab_ceiling
 
         return matrices
 
@@ -719,6 +769,33 @@ class ModelComparator:
         # Profiles where Bühlmann is more conservative
         buhlmann_conservative = [r for r in valid_results if r.delta_risk < -0.1]
 
+        # Ceiling metrics
+        delta_ceilings = [r.delta_ceiling for r in valid_results]
+        buhlmann_ceilings = [r.buhlmann_ceiling for r in valid_results]
+        slab_ceilings = [r.slab_ceiling for r in valid_results]
+
+        # Deco agreement analysis
+        deco_agreements = [
+            r for r in valid_results
+            if r.buhlmann_requires_deco == r.slab_requires_deco
+        ]
+        deco_agreement_pct = (
+            len(deco_agreements) / len(valid_results) * 100 if valid_results else 0
+        )
+
+        # Count profiles requiring deco
+        buhlmann_deco_count = sum(1 for r in valid_results if r.buhlmann_requires_deco)
+        slab_deco_count = sum(1 for r in valid_results if r.slab_requires_deco)
+
+        # Determine which model is more conservative for ceilings
+        slab_deeper_ceiling = [r for r in valid_results if r.delta_ceiling > 0.5]
+        buhlmann_deeper_ceiling = [r for r in valid_results if r.delta_ceiling < -0.5]
+
+        # Find profiles with largest ceiling divergence
+        sorted_by_ceiling_delta = sorted(
+            valid_results, key=lambda r: abs(r.delta_ceiling), reverse=True
+        )
+
         return {
             "total_profiles": len(results),
             "valid_profiles": len(valid_results),
@@ -738,6 +815,37 @@ class ModelComparator:
             "mean_buhlmann_ndl": np.mean(buhlmann_ndls),
             "mean_slab_ndl": np.mean(slab_ndls),
             "ndl_correlation": np.corrcoef(buhlmann_ndls, slab_ndls)[0, 1],
+            # Ceiling divergence stats
+            "mean_delta_ceiling": np.mean(delta_ceilings),
+            "std_delta_ceiling": np.std(delta_ceilings),
+            "max_delta_ceiling": np.max(delta_ceilings),
+            "min_delta_ceiling": np.min(delta_ceilings),
+            "mean_buhlmann_ceiling": np.mean(buhlmann_ceilings),
+            "mean_slab_ceiling": np.mean(slab_ceilings),
+            "ceiling_correlation": np.corrcoef(buhlmann_ceilings, slab_ceilings)[0, 1],
+            # Deco agreement analysis
+            "deco_agreement_pct": deco_agreement_pct,
+            "buhlmann_deco_count": buhlmann_deco_count,
+            "slab_deco_count": slab_deco_count,
+            "both_require_deco": sum(
+                1 for r in valid_results
+                if r.buhlmann_requires_deco and r.slab_requires_deco
+            ),
+            "neither_require_deco": sum(
+                1 for r in valid_results
+                if not r.buhlmann_requires_deco and not r.slab_requires_deco
+            ),
+            "slab_only_deco": sum(
+                1 for r in valid_results
+                if r.slab_requires_deco and not r.buhlmann_requires_deco
+            ),
+            "buhlmann_only_deco": sum(
+                1 for r in valid_results
+                if r.buhlmann_requires_deco and not r.slab_requires_deco
+            ),
+            # Ceiling conservatism
+            "slab_deeper_ceiling_count": len(slab_deeper_ceiling),
+            "buhlmann_deeper_ceiling_count": len(buhlmann_deeper_ceiling),
             # Conservative counts
             "slab_conservative_count": len(slab_conservative),
             "buhlmann_conservative_count": len(buhlmann_conservative),
@@ -762,6 +870,17 @@ class ModelComparator:
                     "slab_ndl": r.slab_ndl,
                 }
                 for r in sorted_by_ndl_delta[:5]
+            ],
+            # Top divergent profiles (by ceiling)
+            "top_divergent_ceiling": [
+                {
+                    "name": r.profile.name,
+                    "depth": r.profile.max_depth,
+                    "delta_ceiling": r.delta_ceiling,
+                    "buhlmann_ceiling": r.buhlmann_ceiling,
+                    "slab_ceiling": r.slab_ceiling,
+                }
+                for r in sorted_by_ceiling_delta[:5]
             ],
         }
 
@@ -883,8 +1002,12 @@ def run_full_backtest(
                     "buhlmann_ndl",
                     "slab_ndl",
                     "delta_ndl",
-                    "buhlmann_ceiling",
+                    "buhlmann_ceiling_bar",
+                    "buhlmann_ceiling_m",
+                    "slab_ceiling_m",
+                    "delta_ceiling_m",
                     "buhlmann_requires_deco",
+                    "slab_requires_deco",
                     "slab_exceeded_limit",
                     "slab_critical_compartment",
                 ]
@@ -903,7 +1026,11 @@ def run_full_backtest(
                             f"{result.slab_ndl:.2f}",
                             f"{result.delta_ndl:.2f}",
                             f"{result.buhlmann_result.max_ceiling:.4f}",
-                            result.buhlmann_result.requires_deco,
+                            f"{result.buhlmann_ceiling:.2f}",
+                            f"{result.slab_ceiling:.2f}",
+                            f"{result.delta_ceiling:.2f}",
+                            result.buhlmann_requires_deco,
+                            result.slab_requires_deco,
                             result.slab_result.exceeded_limit,
                             result.slab_result.critical_compartment,
                         ]

@@ -7,7 +7,7 @@ to simulate nitrogen uptake and offgassing in tissue.
 
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import yaml
 import os
 
@@ -33,8 +33,28 @@ class TissueCompartment:
     D: float  # Diffusion coefficient
     slices: int  # Number of slices
     slab: np.ndarray  # Current tissue state
-    v_crit: float  # Critical volume threshold
+    v_crit: float  # Critical volume threshold (for NDL & risk scoring)
     k: float  # Stability constant for this compartment
+    g_crit: float = 0.0  # Critical gradient at surface (for ceiling/deco checks)
+
+
+@dataclass
+class DecoStop:
+    """A single decompression stop."""
+    depth: float         # Stop depth in meters
+    duration_min: float  # Duration at this stop in minutes
+
+
+@dataclass
+class DecoSchedule:
+    """Complete decompression schedule from the Slab model."""
+    stops: List[DecoStop]               # Ordered deepest-first
+    tts: float                          # Total Time to Surface (minutes)
+    total_deco_time: float              # Sum of stop durations (minutes)
+    final_slabs: dict                   # Tissue state at surface after deco
+    requires_deco: bool                 # True if any stops were needed
+    controlling_compartment: str        # Compartment driving the longest stop
+    ceiling_at_start: float             # Ceiling depth when planning began (meters)
 
 
 @dataclass
@@ -58,6 +78,10 @@ class SlabResult:
     max_cv_ratio: float  # Peak critical volume ratio (>1.0 = exceeded)
     final_ndl: float  # NDL remaining at end of dive (minutes)
     final_slabs: dict  # Final tissue state for each compartment
+
+    # Deco fields (populated when model computes ceiling)
+    ceiling_at_bottom: float = 0.0  # Ceiling depth at end of bottom time (meters)
+    deco_schedule: Optional[DecoSchedule] = None  # Populated by generate_deco_profile
 
     @property
     def exceeded_limit(self) -> bool:
@@ -91,6 +115,7 @@ class SlabModel:
         f_o2=_UNSET,
         surface_altitude_m=_UNSET,
         critical_volume_k=_UNSET,
+        conservatism=_UNSET,
     ):
         """
         Initialize the Multi-Compartment Slab model.
@@ -108,6 +133,9 @@ class SlabModel:
             f_o2: Breathing gas O2 fraction (Air = 0.21)
             surface_altitude_m: Altitude of the water surface (0m = Sea Level)
             critical_volume_k: Calibration constant for critical volume threshold (default 1.0)
+            conservatism: Safety factor for v_crit scaling (default 1.0).
+                          Values < 1.0 are more conservative (e.g., 0.85 = 15% safety margin).
+                          Effective v_crit = v_crit * conservatism.
         """
 
         # Load configuration from file if provided
@@ -123,6 +151,14 @@ class SlabModel:
         self.f_o2 = f_o2 if f_o2 is not _UNSET else config.get('f_o2', 0.21)
         self.surface_altitude_m = surface_altitude_m if surface_altitude_m is not _UNSET else config.get('surface_altitude_m', 0.0)
         self.critical_volume_k = critical_volume_k if critical_volume_k is not _UNSET else config.get('critical_volume_k', 1.0)
+        self.conservatism = conservatism if conservatism is not _UNSET else config.get('conservatism', 1.0)
+
+        # Load deco planning config
+        deco_config = config.get('deco', {})
+        self.deco_stop_increment = deco_config.get('stop_increment', 3.0)
+        self.deco_last_stop_depth = deco_config.get('last_stop_depth', 3.0)
+        self.deco_ascent_rate = deco_config.get('ascent_rate', 10.0)
+        self.deco_max_stop_time = deco_config.get('max_stop_time', 120)
 
         # Load compartments config
         if compartments_config is not None:
@@ -161,9 +197,13 @@ class SlabModel:
             else:
                 v_crit = _compute_v_crit(D, slices, self.dx, self.permeability, self.critical_volume_k)
 
+            # g_crit: critical gradient at surface for ceiling/deco checks.
+            # Calibrated as slab[1] - ppN2_surface at the NDL boundary (30m reference).
+            g_crit = config_item.get("g_crit", 0.0)
+
             compartment = TissueCompartment(
                 name=name, D=D, slices=slices, slab=slab,
-                v_crit=v_crit, k=k,
+                v_crit=v_crit, k=k, g_crit=g_crit,
             )
             self.compartments.append(compartment)
 
@@ -341,12 +381,16 @@ class SlabModel:
         critical_compartment_name = ""
         for compartment in self.compartments:
             excess_gas = self._compute_excess_gas(compartment.slab)
-            cv_ratio = excess_gas / compartment.v_crit if compartment.v_crit > 0 else 0.0
+            effective_v_crit = compartment.v_crit * self.conservatism
+            cv_ratio = excess_gas / effective_v_crit if effective_v_crit > 0 else 0.0
             if cv_ratio > max_cv_ratio:
                 max_cv_ratio = cv_ratio
                 critical_compartment_name = compartment.name
 
         min_margin = 1.0 - max_cv_ratio
+
+        # Calculate ceiling at max depth (how deep must we stop?)
+        ceiling_at_bottom = self.calculate_ceiling(max_depth_slabs, max_depth_seen)
 
         # Calculate NDL from tissue state at max depth (not surface)
         final_ndl = self.calculate_multi_compartment_ndl(max_depth_slabs, max_depth_seen)
@@ -362,42 +406,374 @@ class SlabModel:
             max_cv_ratio=max_cv_ratio,
             final_ndl=float(final_ndl),
             final_slabs=final_slabs,
+            ceiling_at_bottom=ceiling_at_bottom,
         )
 
-    def _simulate_ascent(self, slabs: List[np.ndarray], depth: float, ascent_rate: float = 10.0) -> List[np.ndarray]:
-        """Simulate direct ascent to surface and return tissue state at surface.
+    def _simulate_ascent_to_depth(
+        self,
+        slabs: List[np.ndarray],
+        from_depth: float,
+        to_depth: float,
+        ascent_rate: float = 10.0,
+    ) -> List[np.ndarray]:
+        """Simulate ascent from one depth to another (shallower) depth.
 
         Args:
             slabs: Current tissue states (will NOT be modified — copies are used)
-            depth: Current depth in meters
+            from_depth: Starting depth in meters
+            to_depth: Target depth in meters (must be <= from_depth)
             ascent_rate: Ascent rate in m/min (default 10)
 
         Returns:
-            List of slab arrays representing tissue state at surface after ascent
+            List of slab arrays representing tissue state at to_depth after ascent
         """
         ascent_slabs = [s.copy() for s in slabs]
-        ascent_time_sec = (depth / ascent_rate) * 60
+        depth_delta = from_depth - to_depth
+        if depth_delta <= 0:
+            return ascent_slabs
+
+        ascent_time_sec = (depth_delta / ascent_rate) * 60
         steps = int(ascent_time_sec / self.dt)
 
         for step in range(steps):
-            # Interpolate depth during ascent
-            current_depth = depth * (1 - step / max(steps, 1))
+            ratio = step / max(steps, 1)
+            current_depth = from_depth - ratio * depth_delta
             ppn2 = self._get_ppn2(current_depth)
 
             for i, compartment in enumerate(self.compartments):
-                # Update boundary
                 if self.permeability is None:
                     ascent_slabs[i][0] = ppn2
                 else:
                     flux = self.permeability * (ppn2 - ascent_slabs[i][0])
                     ascent_slabs[i][0] += flux * self.dt
-                # Diffuse
                 ascent_slabs[i][1:-1] += compartment.k * (
                     ascent_slabs[i][:-2] - 2 * ascent_slabs[i][1:-1] + ascent_slabs[i][2:]
                 )
                 ascent_slabs[i][-1] = ascent_slabs[i][-2]
 
         return ascent_slabs
+
+    def _simulate_ascent(self, slabs: List[np.ndarray], depth: float, ascent_rate: float = 10.0) -> List[np.ndarray]:
+        """Simulate direct ascent to surface and return tissue state at surface."""
+        return self._simulate_ascent_to_depth(slabs, depth, 0.0, ascent_rate)
+
+    def _check_safe_at_depth(self, slabs: List[np.ndarray], depth: float) -> bool:
+        """Check if current tissue state allows being at a given depth.
+
+        Uses the boundary gradient approach (Hennessy critical gradient model):
+        With perfect perfusion, slab[0] = ambient ppN2 (no supersaturation at
+        boundary). The first interior slice slab[1] holds the highest tension
+        and drives outward diffusion — this is where bubble formation risk is
+        highest. The critical gradient g_crit scales with ambient pressure
+        via Boyle's Law (higher pressure compresses bubbles).
+
+        Args:
+            slabs: Current tissue states
+            depth: Candidate depth to check safety at (meters)
+
+        Returns:
+            True if safe at this depth
+        """
+        ppn2_at_depth = self._get_ppn2(depth)
+        p_ambient = self._get_atmospheric_pressure() + self._get_hydrostatic_pressure(depth)
+        p_surface = self._get_atmospheric_pressure()
+        pressure_ratio = p_ambient / p_surface
+
+        for i, compartment in enumerate(self.compartments):
+            gradient = slabs[i][1] - ppn2_at_depth
+            effective_g_crit = compartment.g_crit * self.conservatism * pressure_ratio
+            if effective_g_crit > 0 and gradient > effective_g_crit:
+                return False
+        return True
+
+    def _simulate_time_at_depth(
+        self,
+        slabs: List[np.ndarray],
+        depth: float,
+        duration_min: float,
+    ) -> List[np.ndarray]:
+        """Simulate holding at a constant depth for a given duration.
+
+        Args:
+            slabs: Current tissue states (will NOT be modified — copies are used)
+            depth: Depth in meters
+            duration_min: Duration in minutes
+
+        Returns:
+            List of slab arrays representing tissue state after holding
+        """
+        result_slabs = [s.copy() for s in slabs]
+        ppn2 = self._get_ppn2(depth)
+        steps = int(duration_min * 60 / self.dt)
+
+        for _ in range(steps):
+            for i, compartment in enumerate(self.compartments):
+                if self.permeability is None:
+                    result_slabs[i][0] = ppn2
+                else:
+                    flux = self.permeability * (ppn2 - result_slabs[i][0])
+                    result_slabs[i][0] += flux * self.dt
+                result_slabs[i][1:-1] += compartment.k * (
+                    result_slabs[i][:-2] - 2 * result_slabs[i][1:-1] + result_slabs[i][2:]
+                )
+                result_slabs[i][-1] = result_slabs[i][-2]
+
+        return result_slabs
+
+    def calculate_ceiling(
+        self,
+        slabs: List[np.ndarray],
+        current_depth: float,
+        stop_increment: float = None,
+    ) -> float:
+        """Find the shallowest safe depth (ceiling) given current tissue state.
+
+        Uses binary search over stop-increment depths. The ceiling is the
+        shallowest depth where excess_gas / (v_crit * conservatism) <= 1.0
+        for all compartments, evaluated at that depth's ambient pressure.
+
+        Args:
+            slabs: Current tissue states for each compartment
+            current_depth: Current depth in meters (upper bound for search)
+            stop_increment: Depth increment for stops (default from config)
+
+        Returns:
+            Ceiling depth in meters, rounded up to next stop_increment.
+            0.0 if safe to surface directly.
+        """
+        if stop_increment is None:
+            stop_increment = self.deco_stop_increment
+
+        # Quick check: safe at surface?
+        if self._check_safe_at_depth(slabs, 0.0):
+            return 0.0
+
+        # Build candidate depths: [stop_increment, 2*stop_increment, ..., max]
+        import math
+        max_stop = math.ceil(current_depth / stop_increment) * stop_increment
+        # candidates are ordered shallow-to-deep
+        candidates = [i * stop_increment for i in range(1, int(max_stop / stop_increment) + 1)]
+
+        if not candidates:
+            return 0.0
+
+        # Binary search: find shallowest depth where safe
+        # Property: if safe at depth D, also safe at any deeper depth
+        lo, hi = 0, len(candidates) - 1
+
+        # Verify safe at deepest candidate (current depth area)
+        if not self._check_safe_at_depth(slabs, candidates[hi]):
+            return max_stop  # Tissue overloaded even at current depth
+
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._check_safe_at_depth(slabs, candidates[mid]):
+                hi = mid  # Try shallower
+            else:
+                lo = mid + 1  # Need deeper
+
+        return candidates[lo]
+
+    def plan_deco(
+        self,
+        slabs: List[np.ndarray],
+        depth: float,
+        ascent_rate: float = None,
+        last_stop_depth: float = None,
+        stop_increment: float = None,
+        max_stop_time: int = None,
+        gas_switches: Optional[List[dict]] = None,
+    ) -> DecoSchedule:
+        """Generate a complete decompression schedule from current tissue state.
+
+        Starting from current depth and tissue state, iteratively:
+        1. Calculate ceiling
+        2. Ascend to ceiling (simulating tissue changes during ascent)
+        3. Hold at ceiling until ceiling clears to next shallower stop
+        4. Repeat until ceiling is 0 (safe to surface)
+
+        Args:
+            slabs: Current tissue states for each compartment
+            depth: Current depth in meters
+            ascent_rate: Ascent rate in m/min (default from config)
+            last_stop_depth: Shallowest possible stop (default from config)
+            stop_increment: Depth increment between stops (default from config)
+            max_stop_time: Max time at any single stop in minutes (default from config)
+            gas_switches: Future placeholder for gas switch depths (not yet implemented)
+
+        Returns:
+            DecoSchedule with stops, TTS, and final tissue state
+        """
+        if ascent_rate is None:
+            ascent_rate = self.deco_ascent_rate
+        if last_stop_depth is None:
+            last_stop_depth = self.deco_last_stop_depth
+        if stop_increment is None:
+            stop_increment = self.deco_stop_increment
+        if max_stop_time is None:
+            max_stop_time = self.deco_max_stop_time
+
+        working_slabs = [s.copy() for s in slabs]
+        current_depth = depth
+        stops = []
+        total_ascent_time = 0.0
+        controlling_compartment = ""
+        max_stop_duration = 0
+
+        # Record initial ceiling
+        ceiling_at_start = self.calculate_ceiling(working_slabs, current_depth, stop_increment)
+
+        while True:
+            ceiling = self.calculate_ceiling(working_slabs, current_depth, stop_increment)
+
+            if ceiling <= 0.0:
+                # Safe to ascend to surface
+                working_slabs = self._simulate_ascent_to_depth(
+                    working_slabs, current_depth, 0.0, ascent_rate
+                )
+                total_ascent_time += current_depth / ascent_rate
+                break
+
+            # Ascend to ceiling
+            stop_depth = ceiling
+            working_slabs = self._simulate_ascent_to_depth(
+                working_slabs, current_depth, stop_depth, ascent_rate
+            )
+            total_ascent_time += (current_depth - stop_depth) / ascent_rate
+            current_depth = stop_depth
+
+            # Determine next target: one increment shallower, or surface
+            next_stop = max(0.0, stop_depth - stop_increment)
+
+            # Hold at stop until ceiling clears to next_stop
+            stop_time = 0
+            for minute in range(1, max_stop_time + 1):
+                working_slabs = self._simulate_time_at_depth(
+                    working_slabs, stop_depth, 1.0
+                )
+                stop_time = minute
+
+                new_ceiling = self.calculate_ceiling(working_slabs, current_depth, stop_increment)
+                if new_ceiling <= next_stop:
+                    break
+
+            stops.append(DecoStop(depth=stop_depth, duration_min=stop_time))
+
+            # Track which compartment controls the longest stop
+            if stop_time > max_stop_duration:
+                max_stop_duration = stop_time
+                # Find controlling compartment using boundary gradient
+                ppn2_at_stop = self._get_ppn2(stop_depth)
+                p_amb = self._get_atmospheric_pressure() + self._get_hydrostatic_pressure(stop_depth)
+                p_surf = self._get_atmospheric_pressure()
+                p_ratio = p_amb / p_surf
+                max_ratio = 0.0
+                for i, comp in enumerate(self.compartments):
+                    gradient = working_slabs[i][1] - ppn2_at_stop
+                    effective_g_crit = comp.g_crit * self.conservatism * p_ratio
+                    ratio = gradient / effective_g_crit if effective_g_crit > 0 else 0.0
+                    if ratio > max_ratio:
+                        max_ratio = ratio
+                        controlling_compartment = comp.name
+
+            if stop_time >= max_stop_time:
+                break  # Safety limit reached
+
+        total_deco_time = sum(s.duration_min for s in stops)
+        tts = total_deco_time + total_ascent_time
+        final_slabs = {
+            comp.name: working_slabs[i].copy()
+            for i, comp in enumerate(self.compartments)
+        }
+
+        return DecoSchedule(
+            stops=stops,
+            tts=tts,
+            total_deco_time=total_deco_time,
+            final_slabs=final_slabs,
+            requires_deco=len(stops) > 0,
+            controlling_compartment=controlling_compartment,
+            ceiling_at_start=ceiling_at_start,
+        )
+
+    def generate_deco_profile(
+        self,
+        depth: float,
+        bottom_time: float,
+        ascent_rate: float = None,
+        descent_rate: float = 20.0,
+        fO2: float = 0.21,
+        fHe: float = 0.0,
+        last_stop_depth: float = None,
+    ) -> Tuple[DiveProfile, DecoSchedule]:
+        """Generate a complete dive profile including computed deco stops.
+
+        Simulates descent + bottom time to get tissue state, then plans
+        decompression and builds a DiveProfile with stops included.
+
+        Args:
+            depth: Bottom depth in meters
+            bottom_time: Time at depth in minutes
+            ascent_rate: Ascent rate in m/min (default from config)
+            descent_rate: Descent rate in m/min
+            fO2: Oxygen fraction
+            fHe: Helium fraction
+            last_stop_depth: Shallowest deco stop depth (default from config)
+
+        Returns:
+            Tuple of (DiveProfile with deco stops, DecoSchedule)
+        """
+        from backtest.profile_generator import ProfileGenerator
+
+        if ascent_rate is None:
+            ascent_rate = self.deco_ascent_rate
+        if last_stop_depth is None:
+            last_stop_depth = self.deco_last_stop_depth
+
+        # Initialize tissue at surface equilibrium
+        p_surface_bar = self._get_atmospheric_pressure()
+        ppn2_surface = p_surface_bar * (1 - fO2)
+        for compartment in self.compartments:
+            compartment.slab[:] = ppn2_surface
+
+        # Simulate descent
+        descent_time_sec = (depth / descent_rate) * 60
+        descent_steps = int(descent_time_sec / self.dt)
+        for step in range(descent_steps):
+            ratio = step / max(descent_steps, 1)
+            current_depth = ratio * depth
+            ppn2 = self._get_ppn2(current_depth, fO2)
+            for compartment in self.compartments:
+                self._update_compartment(compartment, ppn2)
+
+        # Simulate bottom time
+        ppn2_bottom = self._get_ppn2(depth, fO2)
+        bottom_steps = int(bottom_time * 60 / self.dt)
+        for _ in range(bottom_steps):
+            for compartment in self.compartments:
+                self._update_compartment(compartment, ppn2_bottom)
+
+        # Extract tissue state for deco planning
+        tissue_slabs = [comp.slab.copy() for comp in self.compartments]
+
+        # Plan decompression
+        schedule = self.plan_deco(
+            tissue_slabs, depth,
+            ascent_rate=ascent_rate,
+            last_stop_depth=last_stop_depth,
+        )
+
+        # Build the DiveProfile using ProfileGenerator
+        gen = ProfileGenerator(
+            descent_rate=descent_rate,
+            ascent_rate=ascent_rate,
+        )
+        deco_stops = [(stop.depth, stop.duration_min) for stop in schedule.stops]
+        profile = gen.generate_deco_square(
+            depth, bottom_time, deco_stops, fO2=fO2, fHe=fHe,
+        )
+
+        return profile, schedule
 
     def calculate_multi_compartment_ndl(
         self, current_slabs: List[np.ndarray], depth: float, max_time: int = 100
@@ -423,7 +799,7 @@ class SlabModel:
         surface_slabs = self._simulate_ascent(current_slabs, depth)
         for i, comp in enumerate(self.compartments):
             excess = np.sum(np.maximum(0, surface_slabs[i] - p_surface_equil)) * self.dx
-            if excess > comp.v_crit:
+            if excess > comp.v_crit * self.conservatism:
                 return 0
 
         ppn2_bottom = self._get_ppn2(depth)
@@ -448,7 +824,7 @@ class SlabModel:
             surface_slabs = self._simulate_ascent(shadow_slabs, depth)
             for i, comp in enumerate(self.compartments):
                 excess = np.sum(np.maximum(0, surface_slabs[i] - p_surface_equil)) * self.dx
-                if excess > comp.v_crit:
+                if excess > comp.v_crit * self.conservatism:
                     return minute
 
         return max_time
@@ -471,6 +847,7 @@ class SlabModel:
                 "D": compartment.D,
                 "slices": compartment.slices,
                 "v_crit": compartment.v_crit,
+                "g_crit": compartment.g_crit,
             })
         return config
 

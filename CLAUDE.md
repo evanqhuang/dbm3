@@ -43,7 +43,15 @@ python -m backtest.comparator
 
 ### Tests
 
-The libbuhlmann submodule has tests at `libbuhlmann/test/test_all_of_the_units.py`. There is no test suite for the Python `backtest/` module yet.
+```bash
+# Run deco tests
+python -m pytest tests/test_deco.py -v
+
+# Run all tests
+python -m pytest tests/ -v
+```
+
+The libbuhlmann submodule has tests at `libbuhlmann/test/test_all_of_the_units.py`.
 
 ## Architecture
 
@@ -60,8 +68,10 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 - **`DiveProfile`** (`backtest/profile_generator.py`): Sequence of `(time_min, depth_m, fO2, fHe)` tuples. Converts to libbuhlmann text-stream format via `to_buhlmann_format()`.
 - **`BuhlmannResult`** (`backtest/buhlmann_runner.py`): 16-compartment tissue tensions, ceilings, NDL times, max supersaturation. Output parsed from the `src/dive` binary's stdout (36 values per line).
-- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, critical compartment name, final NDL, max critical volume ratio. Risk scores use the critical volume approach: `risk = excess_gas / V_crit`.
-- **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with diffusion coefficient D, slice count, and `v_crit` (critical volume threshold calibrated against Buhlmann NDLs at 30m reference depth).
+- **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, critical compartment name, final NDL, max critical volume ratio, ceiling at bottom, optional deco schedule. Risk scores use the critical volume approach: `risk = excess_gas / V_crit`.
+- **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with diffusion coefficient D, slice count, `v_crit` (critical volume threshold for NDL/risk), and `g_crit` (critical gradient at surface for ceiling/deco).
+- **`DecoStop`** (`backtest/slab_model.py`): Single decompression stop with depth (meters) and duration (minutes).
+- **`DecoSchedule`** (`backtest/slab_model.py`): Complete deco schedule with stops (deepest-first), TTS, total deco time, final tissue state, requires_deco flag, controlling compartment name, and initial ceiling.
 - **`ComparisonResult`** (`backtest/comparator.py`): Wraps both results with computed `delta_risk` and `delta_ndl` properties.
 
 ### Model Details
@@ -75,12 +85,38 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 Each compartment is a 1D slab with: perfect perfusion at slice[0] (blood-tissue interface instantly matches ambient ppN2), diffusion through interior slices, no-flux boundary at the core. Stability requires `k = (D * dt) / dx^2 <= 0.5`.
 
-**Critical Volume Risk** (Hennessy & Hempleman): Risk is measured by total excess dissolved gas across the slab, compared to a per-compartment threshold:
-- `excess_gas = sum(max(0, slab[i] - P_surface_equil) * dx)` — total gas above surface equilibrium
-- `risk = excess_gas / V_crit` — 1.0 = at limit, >1.0 = exceeded
-- `V_crit` per compartment is calibrated at 30m reference depth against Buhlmann ZH-L16C NDLs
-- Evaluated at end of profile (post-ascent), not per-timestep, to avoid ascent transient artifacts
-- NDL calculation simulates ascent to surface before checking excess gas (ascent-aware)
+**Dual Metric Approach** — The model uses two complementary risk metrics from Hennessy-Hempleman theory:
+
+1. **Critical Volume (for NDL & Risk)**: Total integrated excess dissolved gas across the slab vs threshold:
+   - `excess_gas = sum(max(0, slab[i] - P_surface_equil) * dx)` — gas above surface equilibrium
+   - `risk = excess_gas / V_crit` — 1.0 = at limit, >1.0 = exceeded
+   - `V_crit` calibrated at 30m reference depth against Buhlmann ZH-L16C NDL (28 minutes)
+   - Evaluated at end of profile (post-ascent), not per-timestep, to avoid ascent transient artifacts
+   - NDL calculation simulates ascent to surface before checking excess gas (ascent-aware)
+
+2. **Boundary Gradient (for Ceiling & Deco)**: Gradient at blood-tissue interface vs critical gradient:
+   - With perfect perfusion, `slab[0] = ambient ppN2` (no supersaturation at boundary)
+   - Uses `slab[1]` (first interior slice) as tissue tension for ceiling checks
+   - `gradient = slab[1] - ppN2_ambient`
+   - At surface: `safe if gradient <= g_crit * conservatism`
+   - At depth: `g_crit` scales with Boyle's Law: `effective_g_crit = g_crit × (P_ambient / P_surface)`
+   - Higher ambient pressure compresses bubbles, allowing higher gradients
+   - `g_crit` calibrated as `slab[1] - ppN2_surface` at 30m NDL
+
+**Known Limitation**: Slow compartments (Joints) may show risk > 1.0 on deco dives because the boundary gradient clears before the integrated volume metric. This divergence is expected — the gradient controls ceiling (local bubble risk), while volume controls overall tissue loading.
+
+### Deco Planning
+
+**Methods** (`SlabModel`):
+- `calculate_ceiling(slabs, current_depth)`: Binary search over stop-increment depths to find shallowest safe depth using boundary gradient checks. Returns ceiling in meters (0.0 if safe to surface).
+- `plan_deco(slabs, depth, ...)`: Iterative deco schedule generation. Calculates ceiling, ascends, holds at stop until ceiling clears to next shallower depth, repeats until safe to surface. Returns `DecoSchedule` with stops (deepest-first), TTS, controlling compartment, and final tissue state.
+- `generate_deco_profile(depth, bottom_time, ...)`: End-to-end profile generation. Simulates descent + bottom time to get tissue state, plans deco, builds `DiveProfile` with stops via `ProfileGenerator.generate_deco_square()`.
+
+**Stop Logic**: At each stop depth, simulates forward 1 minute at a time, checking ceiling after each minute. Exits stop when `ceiling <= next_stop_depth`. Max stop time (default 120 min) prevents infinite loops.
+
+**Controlling Compartment**: Identified as compartment with highest `gradient / effective_g_crit` ratio at the longest stop. Typically Spine (fast) for short dives, Joints (slow) for longer exposures.
+
+**Conservatism**: Config parameter scales both `v_crit` and `g_crit`. Values < 1.0 add safety margin (e.g., 0.85 = 15% more conservative stops).
 
 ### Parallel Processing
 
@@ -88,7 +124,13 @@ Each compartment is a 1D slab with: perfect perfusion at slice[0] (blood-tissue 
 
 ### Configuration
 
-`config.yaml` holds slab model parameters (dt, dx, permeability, fO2, compartment definitions with D, slices, and v_crit). `permeability: null` enables perfect perfusion (classic Hempleman slab). `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority. `calibrate_critical_volume.py` recalibrates v_crit values against Buhlmann NDLs.
+`config.yaml` holds slab model parameters:
+- **Simulation**: `dt` (time step, seconds), `dx` (slice spacing), `f_o2`, `surface_altitude_m`, `permeability` (null = perfect perfusion)
+- **Safety**: `conservatism` (1.0 = match Buhlmann, < 1.0 = more conservative, scales both v_crit and g_crit)
+- **Deco**: `stop_increment` (3m), `last_stop_depth` (3m), `ascent_rate` (10 m/min), `max_stop_time` (120 min)
+- **Compartments**: Each has `name`, `D` (diffusion coeff), `slices`, `v_crit` (critical volume for NDL/risk), `g_crit` (critical gradient at surface for ceiling/deco)
+
+Both `v_crit` and `g_crit` are calibrated at 30m reference depth against Buhlmann ZH-L16C NDL (28 minutes). `SlabModel.__init__` accepts either a config file path or explicit kwargs, with explicit values taking priority. `calibrate_critical_volume.py` recalibrates v_crit values; `g_crit` calibration is manual (derived from slab[1] - ppN2_surface at NDL).
 
 ### Output
 
@@ -104,3 +146,6 @@ Backtest runs save to `backtest_output/` or `backtest_output_full/`:
 - `con.py` is a standalone lzma+base64 file decompression utility, not part of the core pipeline
 - Risk scores from both models are normalized: 1.0 = at limit, >1.0 = exceeded. Buhlmann uses M-value fractions; Slab uses critical volume ratios (excess_gas / V_crit).
 - NDL calculation uses a "shadow simulation" approach: clones tissue state, simulates forward at depth, then simulates ascent to surface before checking if excess gas exceeds V_crit. Capped at 100 minutes to match libbuhlmann.
+- Deco planning uses the boundary gradient metric (slab[1] vs g_crit), NOT the integrated volume metric, because it reflects local bubble formation risk. The volume metric is consulted for risk scoring only.
+- Deco stops are typically more conservative than Buhlmann for slow compartments (Joints), as the model requires full gradient clearance at each stop rather than M-value tolerance.
+- For deco dives, slow compartments may show final risk > 1.0 even after completing all stops — this is expected, as the boundary gradient clears first (controls ceiling) while integrated excess lags behind (controls risk score).

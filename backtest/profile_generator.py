@@ -320,6 +320,77 @@ class ProfileGenerator:
 
         return profile
 
+    def generate_deco_square(
+        self,
+        depth: float,
+        bottom_time: float,
+        deco_stops: List[Tuple[float, float]],
+        fO2: float = 0.21,
+        fHe: float = 0.0,
+    ) -> DiveProfile:
+        """Generate a square profile with explicit decompression stops.
+
+        Args:
+            depth: Bottom depth in meters
+            bottom_time: Time at depth in minutes
+            deco_stops: List of (stop_depth_m, stop_duration_min) tuples, deepest first
+            fO2: Oxygen fraction
+            fHe: Helium fraction
+        """
+        stop_desc = "+".join(f"{d:.0f}m/{t:.0f}min" for d, t in deco_stops) if deco_stops else "nodeco"
+        profile = DiveProfile(name=f"deco_{depth}m_{bottom_time}min_{stop_desc}")
+        profile.bottom_time = bottom_time
+
+        time = 0.0
+        current_depth = 0.0
+
+        # Descent phase
+        while current_depth < depth:
+            profile.add_point(time, current_depth, fO2, fHe)
+            current_depth = min(
+                current_depth + self.descent_rate * self.sampling_interval, depth
+            )
+            time += self.sampling_interval
+
+        # Bottom phase
+        end_bottom = time + bottom_time
+        while time < end_bottom:
+            profile.add_point(time, depth, fO2, fHe)
+            time += self.sampling_interval
+
+        # Deco stops (ascend to each stop, hold, repeat)
+        for stop_depth, stop_duration in deco_stops:
+            # Ascend to stop depth
+            while current_depth > stop_depth:
+                profile.add_point(time, current_depth, fO2, fHe)
+                current_depth = max(
+                    current_depth - self.ascent_rate * self.sampling_interval,
+                    stop_depth,
+                )
+                time += self.sampling_interval
+
+            # Hold at stop depth
+            end_stop = time + stop_duration
+            while time < end_stop:
+                profile.add_point(time, stop_depth, fO2, fHe)
+                time += self.sampling_interval
+
+        # Final ascent to surface
+        while current_depth > 0:
+            profile.add_point(time, current_depth, fO2, fHe)
+            current_depth = max(
+                current_depth - self.ascent_rate * self.sampling_interval, 0
+            )
+            time += self.sampling_interval
+
+        # Surface interval (1 minute)
+        end_surface = time + 1.0
+        while time < end_surface:
+            profile.add_point(time, 0.0, fO2, fHe)
+            time += self.sampling_interval
+
+        return profile
+
     def generate_batch(
         self,
         depths: List[float],
