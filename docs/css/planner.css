@@ -1,0 +1,303 @@
+/* Planner-specific styles */
+
+/* Navigation link in header */
+.nav-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  transition: background 0.2s, color 0.2s;
+}
+
+.nav-link:hover {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+/* Input Panel */
+.input-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.input-panel h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+/* Level row (depth + duration + remove button) */
+.level-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.level-row .control-group {
+  flex: 1;
+}
+
+.level-row input[type="number"] {
+  width: 80px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.level-row input[type="number"]:focus {
+  border-color: var(--accent);
+}
+
+.level-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  min-width: 55px;
+}
+
+.btn-remove {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.btn-remove:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* Parameter grid (gas mix, GF, conservatism) */
+.param-grid {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.param-grid input[type="number"] {
+  width: 70px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.param-grid input[type="number"]:focus {
+  border-color: var(--accent);
+}
+
+/* Buttons */
+.btn-secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  margin-bottom: 0.5rem;
+}
+
+.btn-secondary:hover {
+  background: rgba(79, 195, 247, 0.1);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg-primary);
+  border: none;
+  border-radius: 4px;
+  padding: 0.5rem 1.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Error display */
+.error-message {
+  color: var(--red);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: rgba(239, 83, 80, 0.1);
+  border: 1px solid rgba(239, 83, 80, 0.3);
+  border-radius: 4px;
+}
+
+/* Results section */
+.results-section {
+  margin-bottom: 1.5rem;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.result-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+.result-card h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+}
+
+/* Result summary (key metrics) */
+.result-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.result-metric {
+  padding: 0.4rem;
+}
+
+.result-metric .metric-label {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.result-metric .metric-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.metric-value.good { color: var(--green); }
+.metric-value.warn { color: var(--yellow); }
+.metric-value.bad { color: var(--red); }
+
+/* Small chart containers */
+.chart-small {
+  min-height: 200px;
+}
+
+/* Deco section */
+.deco-section {
+  margin-bottom: 1.5rem;
+}
+
+.deco-section h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+/* Deco table */
+.deco-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.deco-table th {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.5rem 0.75rem;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+
+.deco-table th:first-child {
+  text-align: left;
+}
+
+.deco-table td {
+  padding: 0.4rem 0.75rem;
+  text-align: right;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+}
+
+.deco-table td:first-child {
+  text-align: left;
+  color: var(--accent);
+}
+
+.deco-table .tts-row td {
+  font-weight: 700;
+  border-top: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.no-deco-message {
+  color: var(--green);
+  font-size: 0.85rem;
+  padding: 0.5rem;
+}
+
+/* Computing state */
+.computing .btn-primary {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Responsive: stack on smaller screens */
+@media (max-width: 1024px) {
+  .results-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .param-grid {
+    gap: 0.5rem;
+  }
+
+  .level-row {
+    flex-wrap: wrap;
+  }
+}

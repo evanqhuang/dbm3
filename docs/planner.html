@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DBM-3 Dive Planner</title>
+  <link rel="stylesheet" href="css/dashboard.css">
+  <link rel="stylesheet" href="css/planner.css">
+</head>
+<body>
+  <!-- Loading overlay for Pyodide init -->
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="spinner"></div>
+    <p id="loading-text">Initializing Python engine...</p>
+  </div>
+
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <h1>DBM-3</h1>
+      <span class="subtitle">Dive Planner</span>
+    </div>
+    <div class="header-controls">
+      <a href="index.html" class="nav-link">Dashboard</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- Input Panel -->
+    <section class="input-panel">
+      <h2>Dive Parameters</h2>
+      <div id="levels-container">
+        <!-- Level rows added dynamically by JS -->
+      </div>
+      <button id="add-level-btn" class="btn btn-secondary">+ Add Level</button>
+
+      <div class="param-grid">
+        <div class="control-group">
+          <label for="input-fo2">fO2</label>
+          <input type="number" id="input-fo2" value="0.21" min="0.1" max="1.0" step="0.01">
+        </div>
+        <div class="control-group">
+          <label for="input-fhe">fHe</label>
+          <input type="number" id="input-fhe" value="0.00" min="0.0" max="0.8" step="0.01">
+        </div>
+        <div class="control-group">
+          <label for="input-gf-low">GF Low</label>
+          <input type="number" id="input-gf-low" value="100" min="1" max="100" step="1">
+        </div>
+        <div class="control-group">
+          <label for="input-gf-high">GF High</label>
+          <input type="number" id="input-gf-high" value="100" min="1" max="100" step="1">
+        </div>
+        <div class="control-group">
+          <label for="input-conservatism">Conservatism</label>
+          <input type="number" id="input-conservatism" value="1.0" min="0.5" max="1.5" step="0.05">
+        </div>
+      </div>
+
+      <button id="compute-btn" class="btn btn-primary" disabled>Compute</button>
+      <div id="error-display" class="error-message" style="display:none"></div>
+    </section>
+
+    <!-- Profile Chart -->
+    <section class="chart-section">
+      <h2>Dive Profile</h2>
+      <div id="profile-chart" class="chart-container"></div>
+    </section>
+
+    <!-- Results (side-by-side) -->
+    <section id="results-section" class="results-section" style="display:none">
+      <div class="results-grid">
+        <div class="result-card">
+          <h3>Buhlmann ZH-L16C</h3>
+          <div id="buhlmann-summary" class="result-summary"></div>
+          <div id="buhlmann-tissue-chart" class="chart-container chart-small"></div>
+        </div>
+        <div class="result-card">
+          <h3>Slab Diffusion</h3>
+          <div id="slab-summary" class="result-summary"></div>
+          <div id="slab-compartment-chart" class="chart-container chart-small"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Deco Schedule (side-by-side, shown when deco required) -->
+    <section id="deco-section" class="deco-section" style="display:none">
+      <h2>Decompression Schedule</h2>
+      <div class="results-grid">
+        <div class="result-card">
+          <h3>Buhlmann Stops</h3>
+          <div id="buhlmann-deco"></div>
+        </div>
+        <div class="result-card">
+          <h3>Slab Stops</h3>
+          <div id="slab-deco"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+  <script src="js/planner/planner-ui.js"></script>
+  <script src="js/planner/planner-charts.js"></script>
+  <script src="js/planner/planner-app.js"></script>
+</body>
+</html>

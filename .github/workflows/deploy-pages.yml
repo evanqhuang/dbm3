@@ -2,7 +2,7 @@ name: Deploy Dashboard
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
+    paths: ['docs/**', 'backtest/**', 'scripts/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Sync Python model files for Pyodide
+        run: bash scripts/sync_planner_py.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

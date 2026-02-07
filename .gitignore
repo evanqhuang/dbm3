@@ -119,3 +119,6 @@ data/*
 !data/gf_sweep.json
 *.pyc
 __pycache__/
+
+# Generated Pyodide copies of backtest modules (built by scripts/sync_planner_py.sh)
+docs/py/backtest/

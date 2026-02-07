@@ -175,3 +175,49 @@ Output directory naming is handled by `backtest/output_naming.py` (`build_settin
 - Deco planning uses the boundary gradient metric (slab[1] vs g_crit), NOT the integrated volume metric, because it reflects local bubble formation risk. The volume metric is consulted for risk scoring only.
 - Deco stops are typically more conservative than Buhlmann for slow compartments (Joints), as the model requires full gradient clearance at each stop rather than M-value tolerance.
 - For deco dives, slow compartments may show final risk > 1.0 even after completing all stops — this is expected, as the boundary gradient clears first (controls ceiling) while integrated excess lags behind (controls risk score).
+
+## Dive Planner (Interactive Web Page)
+
+### Architecture
+
+The `docs/planner.html` page provides an interactive dive planner that runs both Buhlmann ZH-L16C and Slab Diffusion models **client-side** using Pyodide (Python-in-browser via WebAssembly). No server required.
+
+**Data Flow**:
+```
+Browser JS (planner-app.js)
+  -> Pyodide (Python WASM runtime + numpy)
+    -> planner_bridge.py (JSON API)
+      -> backtest/*.py (actual model code, unchanged)
+    <- JSON results
+  -> Plotly.js charts + DOM rendering
+```
+
+**Zero-Duplication Build Pipeline**:
+- `docs/py/backtest/` is NOT checked into git (in `.gitignore`)
+- `scripts/sync_planner_py.sh` copies `backtest/*.py` to `docs/py/backtest/` and generates a simplified `__init__.py`
+- CI runs this script automatically before deploying to GitHub Pages
+- For local development: run `bash scripts/sync_planner_py.sh` then `python -m http.server -d docs 8080`
+
+**Pyodide Considerations**:
+- `yaml` module is mocked (not available in Pyodide). `SlabModel()` is always called with explicit kwargs, never `config_path`
+- Compartment config (Spine/Muscle/Joints with calibrated v_crit/g_crit) is hardcoded in `planner_bridge.py`
+- Buhlmann deco planning is implemented in the bridge using `haldane_vec()` and `ceiling_pressure_gf()` from `buhlmann_constants.py`
+
+### File Map
+
+| File | Role |
+|------|------|
+| `docs/planner.html` | Main planner page (loads Pyodide + Plotly CDN) |
+| `docs/css/planner.css` | Planner-specific styles (supplements dashboard.css) |
+| `docs/js/planner/planner-app.js` | Pyodide init, state management, event wiring |
+| `docs/js/planner/planner-charts.js` | Plotly chart rendering (profile, tissues, compartments) |
+| `docs/js/planner/planner-ui.js` | DOM manipulation, input handling, results display |
+| `docs/py/planner_bridge.py` | JSON API bridge between JS and Python models (in git) |
+| `docs/py/backtest/` | Copied model files for Pyodide (NOT in git, generated) |
+| `scripts/sync_planner_py.sh` | Build script to sync model files for local dev / CI |
+
+### How to Modify
+
+- **Changing model code** (`backtest/*.py`): Run `bash scripts/sync_planner_py.sh` after changes for local testing. CI auto-syncs on deploy.
+- **Adding new parameters**: Update `planner_bridge.py` (Python API), `planner-ui.js` (input fields + validation), and `planner-app.js` (state passing).
+- **Adding new charts**: Add rendering function in `planner-charts.js`, call it from `planner-app.js` compute handler.
