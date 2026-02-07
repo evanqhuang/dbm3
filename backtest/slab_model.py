@@ -159,6 +159,7 @@ class SlabModel:
         self.deco_last_stop_depth = deco_config.get('last_stop_depth', 3.0)
         self.deco_ascent_rate = deco_config.get('ascent_rate', 10.0)
         self.deco_max_stop_time = deco_config.get('max_stop_time', 120)
+        self.boyle_exponent = deco_config.get('boyle_exponent', 0.5)
 
         # Load compartments config
         if compartments_config is not None:
@@ -481,7 +482,7 @@ class SlabModel:
 
         for i, compartment in enumerate(self.compartments):
             gradient = slabs[i][1] - ppn2_at_depth
-            effective_g_crit = compartment.g_crit * self.conservatism * pressure_ratio
+            effective_g_crit = compartment.g_crit * self.conservatism * (pressure_ratio ** self.boyle_exponent)
             if effective_g_crit > 0 and gradient > effective_g_crit:
                 return False
         return True
@@ -670,7 +671,7 @@ class SlabModel:
                 max_ratio = 0.0
                 for i, comp in enumerate(self.compartments):
                     gradient = working_slabs[i][1] - ppn2_at_stop
-                    effective_g_crit = comp.g_crit * self.conservatism * p_ratio
+                    effective_g_crit = comp.g_crit * self.conservatism * (p_ratio ** self.boyle_exponent)
                     ratio = gradient / effective_g_crit if effective_g_crit > 0 else 0.0
                     if ratio > max_ratio:
                         max_ratio = ratio

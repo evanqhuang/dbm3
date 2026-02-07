@@ -19,12 +19,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from backtest import ProfileGenerator, BuhlmannRunner, SlabModel, ModelComparator
 from backtest.comparator import run_full_backtest
+from backtest.buhlmann_constants import GradientFactors, GF_DEFAULT
+from backtest.output_naming import (
+    build_settings_dirname,
+    load_effective_config,
+    save_config_snapshot,
+)
 
 
-def test_single_profile(depth: float, time: float):
+def test_single_profile(depth: float, time: float, gf: GradientFactors = None):
     """Test a single dive profile through both models."""
+    if gf is None:
+        gf = GF_DEFAULT
+
     print(f"\n{'=' * 60}")
     print(f"Single Profile Test: {depth}m for {time} min")
+    print(f"Bühlmann GF: {gf.gf_low*100:.0f}/{gf.gf_high*100:.0f}")
     print(f"{'=' * 60}")
 
     # Generate profile
@@ -36,9 +46,9 @@ def test_single_profile(depth: float, time: float):
     print(f"Max depth: {profile.max_depth}m")
 
     # Test Bühlmann
-    print("\n--- Bühlmann Model ---")
+    print(f"\n--- Bühlmann Model (GF {gf.gf_low*100:.0f}/{gf.gf_high*100:.0f}) ---")
     try:
-        runner = BuhlmannRunner()
+        runner = BuhlmannRunner(gf=gf)
         buhl_result = runner.run(profile)
         print(f"Max ceiling: {buhl_result.max_ceiling:.3f} bar")
         print(f"Min NDL: {buhl_result.min_ndl:.1f} min")
@@ -91,43 +101,61 @@ def test_single_profile(depth: float, time: float):
             print("→ Models agree on NDL")
 
 
-def run_quick_test():
+def run_quick_test(effective_config: dict):
     """Run a quick test with few profiles."""
     print("\n" + "=" * 60)
     print("QUICK BACKTEST")
     print("=" * 60)
+
+    gf = effective_config["gf"]
+    settings_dir = build_settings_dirname(
+        gf, effective_config["conservatism"],
+        effective_config["boyle_exponent"], effective_config["f_o2"],
+    )
+    output_dir = os.path.join("backtest_output", settings_dir)
 
     results = run_full_backtest(
         depths=[10.0, 20.0, 30.0, 40.0],
         times=[10, 20, 30],
         save_plots=True,
         save_data=True,
-        output_dir="backtest_output",
+        output_dir=output_dir,
+        gf=gf,
     )
 
+    save_config_snapshot(effective_config["config_path"], output_dir)
     print_report(results["report"])
-    print(f"\nPlots saved to: backtest_output/")
+    print(f"\nPlots saved to: {output_dir}/")
 
 
-def run_default_test():
+def run_default_test(effective_config: dict):
     """Run default backtest."""
     print("\n" + "=" * 60)
     print("DEFAULT BACKTEST")
     print("=" * 60)
+
+    gf = effective_config["gf"]
+    settings_dir = build_settings_dirname(
+        gf, effective_config["conservatism"],
+        effective_config["boyle_exponent"], effective_config["f_o2"],
+    )
+    output_dir = os.path.join("backtest_output", settings_dir)
 
     results = run_full_backtest(
         depths=[float(x) for x in range(10, 55, 5)],  # 10-50m in 5m steps
         times=list(range(5, 45, 5)),  # 5-40min in 5min steps
         save_plots=True,
         save_data=True,
-        output_dir="backtest_output",
+        output_dir=output_dir,
+        gf=gf,
     )
 
+    save_config_snapshot(effective_config["config_path"], output_dir)
     print_report(results["report"])
-    print(f"\nPlots saved to: backtest_output/")
+    print(f"\nPlots saved to: {output_dir}/")
 
 
-def run_full_test():
+def run_full_test(effective_config: dict):
     """Run full backtest with many profiles."""
     print("\n" + "=" * 60)
     print("FULL BACKTEST (This may take a while...)")
@@ -141,15 +169,24 @@ def run_full_test():
     total = len(depths) * len(times)
     print(f"Generating {total} profiles...")
 
+    gf = effective_config["gf"]
+    settings_dir = build_settings_dirname(
+        gf, effective_config["conservatism"],
+        effective_config["boyle_exponent"], effective_config["f_o2"],
+    )
+    output_dir = os.path.join("backtest_output_full", settings_dir)
+
     results = run_full_backtest(
-        depths=depths, times=times, save_plots=True, save_data=True, output_dir="backtest_output_full"
+        depths=depths, times=times, save_plots=True, save_data=True,
+        output_dir=output_dir, gf=gf,
     )
 
+    save_config_snapshot(effective_config["config_path"], output_dir)
     print_report(results["report"])
-    print(f"\nPlots saved to: backtest_output_full/")
+    print(f"\nPlots saved to: {output_dir}/")
 
 
-def run_real_data_test():
+def run_real_data_test(effective_config: dict):
     """Run backtest on scraped real dive profiles."""
     print("\n" + "=" * 60)
     print("REAL DATA BACKTEST")
@@ -172,17 +209,21 @@ def run_real_data_test():
 
     print(f"\nLoaded {len(profiles)} real dive profiles")
 
-    # Run comparison
-    comparator = ModelComparator()
+    gf = effective_config["gf"]
+    settings_dir = build_settings_dirname(
+        gf, effective_config["conservatism"],
+        effective_config["boyle_exponent"], effective_config["f_o2"],
+    )
+    output_dir = os.path.join("backtest_output_real", settings_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Run comparison with GF-aware runner
+    comparator = ModelComparator(buhlmann_runner=BuhlmannRunner(gf=gf))
     print("\nRunning model comparisons (this may take a while)...")
     results = comparator.compare_batch(profiles, verbose=True)
 
     # Generate report
     report = comparator.generate_report(results)
-
-    # Save results
-    output_dir = "backtest_output_real"
-    os.makedirs(output_dir, exist_ok=True)
 
     # Save detailed results as CSV
     import csv
@@ -214,6 +255,7 @@ def run_real_data_test():
     with open(json_path, "w") as f:
         json.dump(report, f, indent=2)
 
+    save_config_snapshot(effective_config["config_path"], output_dir)
     print_report(report)
     print(f"\nResults saved to: {output_dir}/")
     print(f"  - {csv_path}")
@@ -295,8 +337,26 @@ def main():
     parser.add_argument(
         "--real-data", action="store_true", help="Run backtest on scraped dive profiles"
     )
+    parser.add_argument(
+        "--gf",
+        nargs=2,
+        type=float,
+        metavar=("GF_LOW", "GF_HIGH"),
+        help="Bühlmann gradient factors as percentages (e.g., --gf 70 85)",
+    )
 
     args = parser.parse_args()
+
+    # Load effective config (merges config.yaml + CLI overrides)
+    effective_config = load_effective_config(
+        gf_override=tuple(args.gf) if args.gf else None,
+    )
+    gf = effective_config["gf"]
+    print(f"Config: GF {gf.gf_low*100:.0f}/{gf.gf_high*100:.0f} "
+          f"(source: {effective_config['gf_source']}), "
+          f"conservatism={effective_config['conservatism']}, "
+          f"boyle={effective_config['boyle_exponent']}, "
+          f"fO2={effective_config['f_o2']}")
 
     # Check if libbuhlmann binary exists
     binary_path = os.path.join(os.path.dirname(__file__), "libbuhlmann", "src", "dive")
@@ -306,15 +366,15 @@ def main():
         print("Continuing anyway (Bühlmann tests may fail)...\n")
 
     if args.profile:
-        test_single_profile(args.profile[0], args.profile[1])
+        test_single_profile(args.profile[0], args.profile[1], gf=gf)
     elif args.quick:
-        run_quick_test()
+        run_quick_test(effective_config)
     elif args.full:
-        run_full_test()
+        run_full_test(effective_config)
     elif args.real_data:
-        run_real_data_test()
+        run_real_data_test(effective_config)
     else:
-        run_default_test()
+        run_default_test(effective_config)
 
 
 if __name__ == "__main__":

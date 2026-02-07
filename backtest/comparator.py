@@ -17,12 +17,26 @@ import time as time_module
 from .profile_generator import ProfileGenerator, DiveProfile
 from .buhlmann_runner import BuhlmannRunner, BuhlmannResult
 from .slab_model import SlabModel, SlabResult
+from .buhlmann_constants import (
+    GradientFactors,
+    GF_DEFAULT,
+    compute_ceilings_gf,
+    compute_ndl_gf,
+    compute_max_supersaturation_gf,
+)
 
 
 def _run_buhlmann_single(
-    binary_path: str, profile: DiveProfile
+    binary_path: str, profile: DiveProfile, gf_low: float = 1.0, gf_high: float = 1.0
 ) -> Optional[BuhlmannResult]:
-    """Helper function for parallel Bühlmann execution."""
+    """Helper function for parallel Bühlmann execution.
+
+    Args:
+        binary_path: Path to libbuhlmann dive binary.
+        profile: Dive profile to process.
+        gf_low: Gradient factor low (primitive for thread safety).
+        gf_high: Gradient factor high (primitive for thread safety).
+    """
     import subprocess
 
     try:
@@ -37,14 +51,15 @@ def _run_buhlmann_single(
         stdout, stderr = process.communicate(input=input_data)
         if process.returncode != 0:
             return None
-        # Parse output inline to avoid circular imports
-        return _parse_buhlmann_output(stdout)
+        return _parse_buhlmann_output(stdout, gf_low, gf_high)
     except Exception:
         return None
 
 
-def _parse_buhlmann_output(output: str) -> Optional[BuhlmannResult]:
-    """Parse libbuhlmann output for parallel execution."""
+def _parse_buhlmann_output(
+    output: str, gf_low: float = 1.0, gf_high: float = 1.0
+) -> Optional[BuhlmannResult]:
+    """Parse libbuhlmann output and apply GF adjustments."""
     times = []
     pressures = []
     compartment_n2 = []
@@ -83,57 +98,36 @@ def _parse_buhlmann_output(output: str) -> Optional[BuhlmannResult]:
     if not times:
         return None
 
-    max_ceiling = max(ceilings)
-    min_ndl = min(ndl_times)
+    is_standard = (gf_low == 1.0 and gf_high == 1.0)
 
-    # Calculate max supersaturation (simplified from BuhlmannRunner)
-    zh_l16_n2_a = [
-        1.2599,
-        1.0000,
-        0.8618,
-        0.7562,
-        0.6667,
-        0.5933,
-        0.5282,
-        0.4701,
-        0.4187,
-        0.3798,
-        0.3497,
-        0.3223,
-        0.2971,
-        0.2737,
-        0.2523,
-        0.2327,
-    ]
-    zh_l16_n2_b = [
-        0.5050,
-        0.6514,
-        0.7222,
-        0.7825,
-        0.8126,
-        0.8434,
-        0.8693,
-        0.8910,
-        0.9092,
-        0.9222,
-        0.9319,
-        0.9403,
-        0.9477,
-        0.9544,
-        0.9602,
-        0.9653,
-    ]
-    max_ratio = 0.0
-    for t_idx, pressure in enumerate(pressures):
-        for c_idx in range(min(16, len(compartment_n2[t_idx]))):
-            p_inert = compartment_n2[t_idx][c_idx]
-            if compartment_he and len(compartment_he[t_idx]) > c_idx:
-                p_inert += compartment_he[t_idx][c_idx]
-            a = zh_l16_n2_a[c_idx]
-            b = zh_l16_n2_b[c_idx]
-            m_value = a + pressure / b
-            ratio = p_inert / m_value if m_value > 0 else 0
-            max_ratio = max(max_ratio, ratio)
+    if is_standard:
+        max_ceiling = max(ceilings)
+        min_ndl = min(ndl_times)
+        max_supersaturation = compute_max_supersaturation_gf(
+            compartment_n2, compartment_he, pressures, 1.0, 1.0
+        )
+    else:
+        # Recalculate with GF-adjusted M-values
+        gf_ceilings = []
+        gf_ndls = []
+        for t_idx in range(len(times)):
+            ceil, _ = compute_ceilings_gf(
+                compartment_n2[t_idx], compartment_he[t_idx], gf_low
+            )
+            gf_ceilings.append(ceil)
+            ndl = compute_ndl_gf(
+                compartment_n2[t_idx], compartment_he[t_idx],
+                pressures[t_idx], 0.79, gf_high,
+            )
+            gf_ndls.append(ndl)
+
+        ceilings = gf_ceilings
+        ndl_times = gf_ndls
+        max_ceiling = max(ceilings)
+        min_ndl = min(ndl_times)
+        max_supersaturation = compute_max_supersaturation_gf(
+            compartment_n2, compartment_he, pressures, gf_low, gf_high
+        )
 
     return BuhlmannResult(
         times=times,
@@ -144,7 +138,9 @@ def _parse_buhlmann_output(output: str) -> Optional[BuhlmannResult]:
         ndl_times=ndl_times,
         max_ceiling=max_ceiling,
         min_ndl=min_ndl,
-        max_supersaturation=max_ratio,
+        max_supersaturation=max_supersaturation,
+        gf_low=gf_low,
+        gf_high=gf_high,
     )
 
 
@@ -296,13 +292,27 @@ class ModelComparator:
         Args:
             buhlmann_runner: BuhlmannRunner instance (auto-created if None)
             slab_model: SlabModel instance (auto-created if None)
-            config_path: Path to config.yaml for SlabModel (auto-detected if None)
+            config_path: Path to config.yaml for SlabModel and GF settings (auto-detected if None)
         """
-        self.buhlmann = buhlmann_runner or BuhlmannRunner()
+        cfg = config_path or self._DEFAULT_CONFIG
+
+        # Load GF from config
+        self.gf = GF_DEFAULT
+        if os.path.exists(cfg):
+            import yaml
+            with open(cfg) as f:
+                config = yaml.safe_load(f) or {}
+            buhlmann_cfg = config.get("buhlmann", {})
+            if buhlmann_cfg:
+                self.gf = GradientFactors(
+                    gf_low=float(buhlmann_cfg.get("gf_low", 1.0)),
+                    gf_high=float(buhlmann_cfg.get("gf_high", 1.0)),
+                )
+
+        self.buhlmann = buhlmann_runner or BuhlmannRunner(gf=self.gf)
         if slab_model is not None:
             self.slab = slab_model
         else:
-            cfg = config_path or self._DEFAULT_CONFIG
             self.slab = SlabModel(config_path=cfg) if os.path.exists(cfg) else SlabModel()
         self.generator = ProfileGenerator()
 
@@ -404,9 +414,11 @@ class ModelComparator:
 
         # Bühlmann: Use ThreadPoolExecutor (I/O bound - subprocess calls)
         binary_path = self.buhlmann.binary_path
+        gf_low = self.gf.gf_low
+        gf_high = self.gf.gf_high
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = {
-                executor.submit(_run_buhlmann_single, binary_path, p): i
+                executor.submit(_run_buhlmann_single, binary_path, p, gf_low, gf_high): i
                 for i, p in enumerate(profiles)
             }
             completed = 0
@@ -891,6 +903,8 @@ def run_full_backtest(
     save_plots: bool = True,
     save_data: bool = True,
     output_dir: str = ".",
+    config_path: Optional[str] = None,
+    gf: Optional[GradientFactors] = None,
 ) -> Dict:
     """
     Run a complete backtest comparison between Bühlmann and Slab models.
@@ -901,6 +915,8 @@ def run_full_backtest(
         save_plots: Whether to save plots to disk
         save_data: Whether to save raw data (CSV/JSON) to disk
         output_dir: Directory for output files
+        config_path: Path to config.yaml (auto-detected if None)
+        gf: Gradient factors to use (overrides config if provided)
 
     Returns:
         Dictionary with results and statistics
@@ -919,7 +935,12 @@ def run_full_backtest(
         f"Running backtest: {len(depths)} depths x {len(times)} times = {len(depths) * len(times)} profiles"
     )
 
-    comparator = ModelComparator()
+    if gf is not None:
+        comparator = ModelComparator(
+            buhlmann_runner=BuhlmannRunner(gf=gf), config_path=config_path
+        )
+    else:
+        comparator = ModelComparator(config_path=config_path)
 
     # Generate divergence matrices (risk and NDL)
     matrices = comparator.generate_divergence_matrix(

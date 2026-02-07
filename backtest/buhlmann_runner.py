@@ -7,10 +7,17 @@ Treats the src/dive binary as a black-box function f(profile) -> risk_metrics.
 import subprocess
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from pathlib import Path
 
 from .profile_generator import DiveProfile
+from .buhlmann_constants import (
+    GradientFactors,
+    GF_DEFAULT,
+    compute_ceilings_gf,
+    compute_ndl_gf,
+    compute_max_supersaturation_gf,
+)
 
 
 @dataclass
@@ -33,6 +40,10 @@ class BuhlmannResult:
     max_ceiling: float  # Maximum ceiling reached (bar)
     min_ndl: float  # Minimum NDL during dive (minutes)
     max_supersaturation: float  # Maximum M-value percentage reached
+
+    # Gradient factors used (1.0/1.0 = standard Bühlmann)
+    gf_low: float = 1.0
+    gf_high: float = 1.0
 
     @property
     def requires_deco(self) -> bool:
@@ -57,13 +68,19 @@ class BuhlmannRunner:
     and parse the output for compartment states and safety metrics.
     """
 
-    def __init__(self, binary_path: Optional[str] = None):
+    def __init__(
+        self,
+        binary_path: Optional[str] = None,
+        gf: Optional[GradientFactors] = None,
+    ):
         """
         Initialize the runner.
 
         Args:
             binary_path: Path to the dive binary. If None, auto-detect.
+            gf: Gradient factors for M-value adjustments. Defaults to GF 100/100.
         """
+        self.gf = gf or GF_DEFAULT
         if binary_path is None:
             # Auto-detect binary location
             possible_paths = [
@@ -176,17 +193,42 @@ class BuhlmannRunner:
         if not times:
             raise ValueError("No valid output from libbuhlmann")
 
-        # Calculate summary metrics
-        max_ceiling = max(ceilings)
-        min_ndl = min(ndl_times)
+        if self.gf.is_standard:
+            # GF 100/100: use raw C binary values
+            max_ceiling = max(ceilings)
+            min_ndl = min(ndl_times)
+            max_supersaturation = self._calculate_max_supersaturation(
+                compartment_n2, compartment_he, pressures
+            )
+        else:
+            # Recalculate with GF-adjusted M-values
+            gf_ceilings = []
+            gf_ndls = []
+            for t_idx in range(len(times)):
+                ceil, _ = compute_ceilings_gf(
+                    compartment_n2[t_idx],
+                    compartment_he[t_idx],
+                    self.gf.gf_low,
+                )
+                gf_ceilings.append(ceil)
 
-        # Calculate max supersaturation
-        # Supersaturation = tissue_pressure / M_value
-        # For simplicity, we use ceiling as a proxy: if ceiling > surface, we're supersaturated
-        # A more accurate calculation would require the M-value constants
-        max_supersaturation = self._calculate_max_supersaturation(
-            compartment_n2, compartment_he, pressures
-        )
+                ndl = compute_ndl_gf(
+                    compartment_n2[t_idx],
+                    compartment_he[t_idx],
+                    pressures[t_idx],
+                    0.79,  # f_inert for air
+                    self.gf.gf_high,
+                )
+                gf_ndls.append(ndl)
+
+            ceilings = gf_ceilings
+            ndl_times = gf_ndls
+            max_ceiling = max(ceilings)
+            min_ndl = min(ndl_times)
+            max_supersaturation = compute_max_supersaturation_gf(
+                compartment_n2, compartment_he, pressures,
+                self.gf.gf_low, self.gf.gf_high,
+            )
 
         return BuhlmannResult(
             times=times,
@@ -198,10 +240,12 @@ class BuhlmannRunner:
             max_ceiling=max_ceiling,
             min_ndl=min_ndl,
             max_supersaturation=max_supersaturation,
+            gf_low=self.gf.gf_low,
+            gf_high=self.gf.gf_high,
         )
 
+    @staticmethod
     def _calculate_max_supersaturation(
-        self,
         compartment_n2: List[List[float]],
         compartment_he: List[List[float]],
         pressures: List[float],
@@ -209,68 +253,12 @@ class BuhlmannRunner:
         """
         Calculate maximum supersaturation across all compartments and time steps.
 
-        Uses ZH-L16A M-values for the calculation.
-        Returns value as fraction of M-value (1.0 = at limit, >1.0 = exceeded).
+        Uses standard (GF 100/100) M-values. For GF-adjusted supersaturation,
+        use compute_max_supersaturation_gf() instead.
         """
-        # ZH-L16 a and b values for N2 (simplified, first 16 compartments)
-        # These are the surface M-value parameters
-        zh_l16_n2_a = [
-            1.2599,
-            1.0000,
-            0.8618,
-            0.7562,
-            0.6667,
-            0.5933,
-            0.5282,
-            0.4701,
-            0.4187,
-            0.3798,
-            0.3497,
-            0.3223,
-            0.2971,
-            0.2737,
-            0.2523,
-            0.2327,
-        ]
-        zh_l16_n2_b = [
-            0.5050,
-            0.6514,
-            0.7222,
-            0.7825,
-            0.8126,
-            0.8434,
-            0.8693,
-            0.8910,
-            0.9092,
-            0.9222,
-            0.9319,
-            0.9403,
-            0.9477,
-            0.9544,
-            0.9602,
-            0.9653,
-        ]
-
-        max_ratio = 0.0
-
-        for t_idx, pressure in enumerate(pressures):
-            for c_idx in range(min(16, len(compartment_n2[t_idx]))):
-                # Total inert gas pressure
-                p_inert = compartment_n2[t_idx][c_idx]
-                if compartment_he and len(compartment_he[t_idx]) > c_idx:
-                    p_inert += compartment_he[t_idx][c_idx]
-
-                # M-value at current ambient pressure
-                # M = a + P_ambient / b
-                a = zh_l16_n2_a[c_idx]
-                b = zh_l16_n2_b[c_idx]
-                m_value = a + pressure / b
-
-                # Supersaturation ratio
-                ratio = p_inert / m_value if m_value > 0 else 0
-                max_ratio = max(max_ratio, ratio)
-
-        return max_ratio
+        return compute_max_supersaturation_gf(
+            compartment_n2, compartment_he, pressures, 1.0, 1.0
+        )
 
     def run_batch(self, profiles: List[DiveProfile]) -> List[BuhlmannResult]:
         """
@@ -304,6 +292,7 @@ if __name__ == "__main__":
     result = runner.run(profile)
 
     print(f"Profile: {profile.name}")
+    print(f"GF: {result.gf_low*100:.0f}/{result.gf_high*100:.0f}")
     print(f"Max ceiling: {result.max_ceiling:.2f} bar")
     print(f"Min NDL: {result.min_ndl:.1f} min")
     print(f"Max supersaturation: {result.max_supersaturation:.2%}")

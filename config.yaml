@@ -1,4 +1,11 @@
-# Configuration file for Slab Decompression Model
+# Configuration file for Decompression Model Backtesting
+
+# Bühlmann gradient factors
+# GF 100/100 = standard Bühlmann (no adjustment)
+# GF 70/85 = common conservative setting for recreational/tech diving
+buhlmann:
+  gf_low: 0.70
+  gf_high: 0.85
 
 # Simulation parameters
 dt: 0.5           # Time step in seconds (smaller = more precise)
@@ -22,6 +29,7 @@ deco:
   last_stop_depth: 3.0      # Shallowest stop depth (meters)
   ascent_rate: 10.0          # Default ascent rate (m/min)
   max_stop_time: 120         # Maximum time at any single stop (minutes)
+  boyle_exponent: 0.5        # Sublinear pressure scaling (1.0 = linear Boyle's, 0.5 = sqrt)
 
 # Compartment definitions
 # v_crit: critical volume threshold (bar*distance)
@@ -30,7 +38,7 @@ deco:
 # g_crit: critical gradient at surface (bar) for ceiling/deco calculations.
 #   Uses boundary gradient approach (Hennessy): slab[1] tension at tissue-blood
 #   interface vs ambient ppN2. Calibrated as slab[1] - ppN2_surface at 30m NDL.
-#   At depth, g_crit scales with ambient pressure (Boyle's Law compression).
+#   At depth, scales with sublinear Boyle's Law: (P_ambient/P_surface)^boyle_exponent.
 compartments:
   - name: "Spine"      # Fast, Sensitive
     D: 0.002           # Diffusion coefficient

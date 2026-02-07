@@ -560,6 +560,113 @@ class TestEdgeCases:
             f"dive1 max={max_excess_dive1:.4f}, dive2 max={max_excess_dive2:.4f}"
 
 
+class TestBoyleExponentScaling:
+    """Test sublinear Boyle's Law scaling for g_crit."""
+
+    def test_sublinear_scaling_deeper_ceiling(self):
+        """Sublinear scaling (exponent=0.5) should produce deeper ceilings than linear (1.0) at depth."""
+        # Build a loaded tissue state at 50m for 25min, then compare ceilings
+        model_sqrt = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')  # boyle_exponent=0.5 from config
+
+        # Simulate descent + bottom time to load tissue
+        ppn2_surface = model_sqrt._get_atmospheric_pressure() * (1 - model_sqrt.f_o2)
+        for comp in model_sqrt.compartments:
+            comp.slab[:] = ppn2_surface
+
+        # Descent
+        depth = 50.0
+        descent_steps = int((depth / 20.0) * 60 / model_sqrt.dt)
+        for step in range(descent_steps):
+            ratio = step / max(descent_steps, 1)
+            ppn2 = model_sqrt._get_ppn2(ratio * depth)
+            for comp in model_sqrt.compartments:
+                model_sqrt._update_compartment(comp, ppn2)
+
+        # Bottom time
+        ppn2_bottom = model_sqrt._get_ppn2(depth)
+        bottom_steps = int(25.0 * 60 / model_sqrt.dt)
+        for _ in range(bottom_steps):
+            for comp in model_sqrt.compartments:
+                model_sqrt._update_compartment(comp, ppn2_bottom)
+
+        tissue_slabs = [comp.slab.copy() for comp in model_sqrt.compartments]
+
+        # Ceiling with sqrt scaling (config default 0.5)
+        ceiling_sqrt = model_sqrt.calculate_ceiling(tissue_slabs, depth)
+
+        # Now compute ceiling with linear scaling
+        model_sqrt.boyle_exponent = 1.0
+        ceiling_linear = model_sqrt.calculate_ceiling(tissue_slabs, depth)
+
+        # Sqrt scaling should produce a deeper (more conservative) ceiling
+        assert ceiling_sqrt >= ceiling_linear, \
+            f"Sqrt ceiling ({ceiling_sqrt}m) should be >= linear ceiling ({ceiling_linear}m)"
+        # They should actually differ at depth
+        assert ceiling_sqrt > ceiling_linear, \
+            f"At 50m depth, sqrt and linear ceilings should differ: sqrt={ceiling_sqrt}m, linear={ceiling_linear}m"
+
+    def test_boyle_exponent_surface_invariant(self):
+        """At surface (pressure_ratio=1.0), boyle_exponent should have no effect (1.0^n = 1.0)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Create tissue state with moderate loading
+        ppn2_surface = model._get_atmospheric_pressure() * (1 - model.f_o2)
+        loaded_slabs = []
+        for comp in model.compartments:
+            slab = np.full(comp.slices, ppn2_surface + 0.5)
+            loaded_slabs.append(slab)
+
+        # Check safety at surface with different exponents
+        results = []
+        for exponent in [0.3, 0.5, 0.7, 1.0]:
+            model.boyle_exponent = exponent
+            safe = model._check_safe_at_depth(loaded_slabs, 0.0)
+            results.append(safe)
+
+        # All should produce the same result
+        assert len(set(results)) == 1, \
+            f"Surface safety should be identical for all exponents, got {results}"
+
+    def test_boyle_exponent_monotonicity(self):
+        """Smaller boyle_exponent should produce deeper (more conservative) ceilings."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Load tissue at 45m/20min
+        ppn2_surface = model._get_atmospheric_pressure() * (1 - model.f_o2)
+        for comp in model.compartments:
+            comp.slab[:] = ppn2_surface
+
+        depth = 45.0
+        descent_steps = int((depth / 20.0) * 60 / model.dt)
+        for step in range(descent_steps):
+            ratio = step / max(descent_steps, 1)
+            ppn2 = model._get_ppn2(ratio * depth)
+            for comp in model.compartments:
+                model._update_compartment(comp, ppn2)
+
+        ppn2_bottom = model._get_ppn2(depth)
+        bottom_steps = int(20.0 * 60 / model.dt)
+        for _ in range(bottom_steps):
+            for comp in model.compartments:
+                model._update_compartment(comp, ppn2_bottom)
+
+        tissue_slabs = [comp.slab.copy() for comp in model.compartments]
+
+        # Calculate ceilings at different exponents
+        exponents = [0.3, 0.5, 0.7, 1.0]
+        ceilings = []
+        for exp in exponents:
+            model.boyle_exponent = exp
+            ceiling = model.calculate_ceiling(tissue_slabs, depth)
+            ceilings.append(ceiling)
+
+        # Smaller exponent = less permissive scaling = deeper ceiling
+        for i in range(len(ceilings) - 1):
+            assert ceilings[i] >= ceilings[i + 1], \
+                f"Exponent {exponents[i]} ceiling ({ceilings[i]}m) should be >= " \
+                f"exponent {exponents[i+1]} ceiling ({ceilings[i+1]}m)"
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])

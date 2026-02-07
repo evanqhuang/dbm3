@@ -7,6 +7,7 @@ analysis of the divergence between Bühlmann and Slab decompression models acros
 depth and time regimes.
 """
 
+import argparse
 import matplotlib
 matplotlib.use('Agg')  # Headless rendering
 
@@ -16,8 +17,39 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-CSV_PATH = os.path.join(os.path.dirname(__file__), "backtest_output_full", "results_detailed.csv")
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "backtest_output_full")
+
+def _resolve_input_dir(cli_arg: str = None) -> str:
+    """Resolve the input directory for analysis.
+
+    Priority:
+    1. Explicit CLI argument
+    2. Most recently modified subfolder under backtest_output_full/
+    3. Flat backtest_output_full/ (backward compat with old layout)
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "backtest_output_full")
+
+    if cli_arg:
+        return cli_arg
+
+    # Try auto-discovery: find most recent subfolder with results_detailed.csv
+    if os.path.isdir(base_dir):
+        candidates = []
+        for entry in os.listdir(base_dir):
+            subdir = os.path.join(base_dir, entry)
+            csv_check = os.path.join(subdir, "results_detailed.csv")
+            if os.path.isdir(subdir) and os.path.exists(csv_check):
+                candidates.append((os.path.getmtime(csv_check), subdir))
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][1]
+
+    # Fallback: flat layout
+    return base_dir
+
+
+# These will be set in main() after arg parsing
+CSV_PATH = None
+OUTPUT_DIR = None
 
 
 def load_csv_data():
@@ -420,6 +452,21 @@ def plot_divergence_histograms(data):
 
 def main():
     """Main analysis entry point."""
+    global CSV_PATH, OUTPUT_DIR
+
+    parser = argparse.ArgumentParser(
+        description="Analyze backtest divergence data from results_detailed.csv"
+    )
+    parser.add_argument(
+        "input_dir", nargs="?", default=None,
+        help="Input directory containing results_detailed.csv "
+             "(auto-discovers latest subfolder if omitted)",
+    )
+    args = parser.parse_args()
+
+    OUTPUT_DIR = _resolve_input_dir(args.input_dir)
+    CSV_PATH = os.path.join(OUTPUT_DIR, "results_detailed.csv")
+
     print("\nLoading CSV data from:", CSV_PATH)
     data = load_csv_data()
     print(f"Loaded {len(data['depth'])} data points")
