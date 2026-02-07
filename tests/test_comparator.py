@@ -58,16 +58,6 @@ def _make_slab_result(**overrides):
     return SlabResult(**defaults)
 
 
-def _make_output_line(time, pressure, n2_base=0.8, he_base=0.0, ceiling=0.95, ndl=28.0):
-    """Create a 36-value output line in libbuhlmann format."""
-    parts = [f"{time:.2f}", f"{pressure:.2f}"]
-    for c in range(16):
-        parts.append(f"{n2_base + c * 0.01:.4f}")
-        parts.append(f"{he_base:.4f}")
-    parts.append(f"{ceiling:.4f}")
-    parts.append(f"{ndl:.2f}")
-    return " ".join(parts)
-
 
 class TestComparisonResultRisk:
     """Test risk-related properties of ComparisonResult."""

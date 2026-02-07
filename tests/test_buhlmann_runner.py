@@ -25,7 +25,7 @@ def _make_output_line(time, pressure, n2_base=0.8, he_base=0.0, ceiling=0.95, nd
 
 
 # Skip marker for integration tests requiring the C binary
-BINARY_PATH = '/Users/evanhuang/dbm3/libbuhlmann/src/dive'
+BINARY_PATH = os.path.join(os.path.dirname(__file__), '..', 'libbuhlmann', 'src', 'dive')
 skip_no_binary = pytest.mark.skipif(
     not os.path.exists(BINARY_PATH),
     reason="libbuhlmann binary not available"
@@ -344,12 +344,8 @@ class TestParseOutputGFAdjustment:
         result_std = runner_standard._parse_output(output)
         result_cons = runner_conservative._parse_output(output)
 
-        # Conservative should have shorter NDL or similar
-        # NDL is calculated from current tissue state, so verify it's calculated
-        assert result_cons.min_ndl >= 0
-        assert result_std.min_ndl >= 0
         # Conservative GF limits M-value more, so NDL should be shorter or equal
-        assert result_cons.min_ndl <= result_std.min_ndl + 1.0  # Allow small tolerance
+        assert result_cons.min_ndl <= result_std.min_ndl
 
 
 # ============================================================================

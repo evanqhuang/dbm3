@@ -244,22 +244,23 @@ class TestGenerateSquare:
         profile = gen.generate_square(depth=30.0, bottom_time=5.0)
 
         # Expected ascent time = 30m / 10m/min = 3 minutes
-        # Find when dive reaches max depth and starts ascending
-        max_depth_time = None
+        # Find last point at max depth and first point back at surface
+        last_deep_time = None
         surface_time = None
 
         for time, depth, _, _ in profile.points:
-            if depth >= 29.9 and max_depth_time is None:
-                max_depth_time = time
-            if depth <= 0.1 and max_depth_time is not None and surface_time is None:
+            if depth >= 29.9:
+                last_deep_time = time
+            if depth <= 0.1 and last_deep_time is not None and surface_time is None:
                 surface_time = time
                 break
 
-        if max_depth_time is not None and surface_time is not None:
-            # Account for bottom time (5 min) in the middle
-            # Total time from leaving depth to surface should be ~3 min after bottom phase
-            # Just verify we eventually reach surface
-            assert surface_time > max_depth_time
+        assert last_deep_time is not None, "Profile never reached target depth"
+        assert surface_time is not None, "Profile never returned to surface"
+        ascent_duration = surface_time - last_deep_time
+        expected_ascent = 30.0 / 10.0  # 3 minutes
+        assert ascent_duration == pytest.approx(expected_ascent, abs=0.5), \
+            f"Ascent should take ~{expected_ascent} min, took {ascent_duration:.2f} min"
 
     def test_square_custom_gas_fractions(self):
         """fO2=0.32 in all points."""

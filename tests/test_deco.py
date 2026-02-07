@@ -779,7 +779,8 @@ class TestSlabModelRun:
         # Shape should be [time_steps, num_compartments, slices_per_compartment]
         assert result.slab_history.ndim == 3, "slab_history should be 3D"
         assert result.slab_history.shape[1] == 3, "should have 3 compartments"
-        assert result.slab_history.shape[2] == 20, "should have 20 slices"
+        assert result.slab_history.shape[2] == model.compartments[0].slices, \
+            "slices dimension should match compartment config"
 
     def test_run_critical_compartment_is_valid_name(self):
         """critical_compartment in ['Spine', 'Muscle', 'Joints']."""
@@ -938,8 +939,9 @@ class TestAtmosphericPressure:
 
         pressure = model._get_atmospheric_pressure(altitude_m=5300.0)
 
-        assert pytest.approx(pressure, abs=0.05) == 0.527, \
-            f"5300m altitude pressure should be approximately 0.527 bar, got {pressure}"
+        # Standard barometric formula: 1.01325 * (1 - 2.25577e-5 * 5300)^5.25588 ≈ 0.530
+        assert pressure == pytest.approx(0.530, abs=0.02), \
+            f"5300m altitude pressure should be approximately 0.530 bar, got {pressure}"
 
 
 class TestPPN2Calculation:
