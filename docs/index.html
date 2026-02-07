@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SlabDive Dashboard</title>
+  <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+  <div id="loading-spinner" class="loading-overlay">
+    <div class="spinner"></div>
+    <p>Loading 52K+ dive profiles...</p>
+  </div>
+
+  <header>
+    <div class="header-left">
+      <h1>SlabDive</h1>
+      <span class="subtitle">Slab Diffusion vs Buhlmann ZH-L16C</span>
+    </div>
+    <div class="header-controls">
+      <div class="control-group">
+        <label for="dataset-select">Dataset</label>
+        <select id="dataset-select"></select>
+      </div>
+      <div class="control-group">
+        <label for="gf-select">Gradient Factor</label>
+        <select id="gf-select"></select>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <button class="tab-btn active" data-tab="summary">Summary</button>
+    <button class="tab-btn" data-tab="heatmaps">Heatmaps</button>
+    <button class="tab-btn" data-tab="scatter">Scatter</button>
+    <button class="tab-btn" data-tab="profiles">Profiles</button>
+  </nav>
+
+  <main>
+    <!-- Summary Tab -->
+    <section id="tab-summary" class="tab-panel active">
+      <div id="summary-cards" class="card-grid"></div>
+      <div class="chart-section">
+        <h2>GF Comparison</h2>
+        <div id="gf-comparison-table-container"></div>
+        <div id="gf-comparison-chart"></div>
+      </div>
+    </section>
+
+    <!-- Heatmaps Tab -->
+    <section id="tab-heatmaps" class="tab-panel">
+      <div class="tab-controls">
+        <div class="control-group">
+          <label for="heatmap-metric">Metric</label>
+          <select id="heatmap-metric">
+            <option value="risk">Risk</option>
+            <option value="ndl">NDL</option>
+            <option value="ceiling">Ceiling</option>
+          </select>
+        </div>
+      </div>
+      <div id="heatmap-fallback" class="fallback-message" style="display:none">
+        <p>Heatmaps require the synthetic dataset (regular depth/time grid).</p>
+        <button id="heatmap-switch-btn" class="btn">Switch to Synthetic</button>
+      </div>
+      <div id="heatmap-panels" class="heatmap-grid">
+        <div id="heatmap-buhlmann" class="chart-container"></div>
+        <div id="heatmap-slab" class="chart-container"></div>
+        <div id="heatmap-delta" class="chart-container"></div>
+      </div>
+    </section>
+
+    <!-- Scatter Tab -->
+    <section id="tab-scatter" class="tab-panel">
+      <div class="tab-controls">
+        <div class="control-group">
+          <label for="scatter-metric">Metric</label>
+          <select id="scatter-metric">
+            <option value="risk">Risk</option>
+            <option value="ndl">NDL</option>
+            <option value="ceiling">Ceiling</option>
+          </select>
+        </div>
+      </div>
+      <div id="scatter-fallback" class="fallback-message" style="display:none">
+        <p>Ceiling scatter is not available for the real dataset.</p>
+        <button id="scatter-switch-btn" class="btn">Switch to Synthetic</button>
+      </div>
+      <div id="scatter-chart" class="chart-container"></div>
+      <div id="scatter-stats" class="stats-panel"></div>
+    </section>
+
+    <!-- Profiles Tab -->
+    <section id="tab-profiles" class="tab-panel">
+      <div class="tab-controls">
+        <div class="control-group">
+          <label for="profile-search">Search</label>
+          <input type="text" id="profile-search" placeholder="Filter by profile name...">
+        </div>
+        <div class="control-group">
+          <label for="profile-sort">Sort by</label>
+          <select id="profile-sort">
+            <option value="profile_name">Name</option>
+            <option value="delta_risk">Delta Risk</option>
+            <option value="delta_ndl">Delta NDL</option>
+          </select>
+        </div>
+      </div>
+      <div id="profile-table-container"></div>
+      <div id="profile-pagination" class="pagination"></div>
+    </section>
+  </main>
+
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/table.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
