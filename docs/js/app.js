@@ -1,4 +1,4 @@
-/* SlabDive Dashboard — App Controller */
+/* DBM-3 Dashboard — App Controller */
 
 (function () {
   'use strict';

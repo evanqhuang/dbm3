@@ -1,4 +1,4 @@
-// charts.js — Plotly.js chart rendering for SlabDive dashboard
+// charts.js — Plotly.js chart rendering for DBM-3 dashboard
 
 const DARK_LAYOUT = {
   paper_bgcolor: '#1a1a2e',

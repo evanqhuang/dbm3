@@ -65,7 +65,7 @@ class GitHubMiner:
         else:
             logger.warning("No GITHUB_TOKEN set - using unauthenticated API (60 req/hr)")
         self.session.headers["Accept"] = "application/vnd.github.v3+json"
-        self.session.headers["User-Agent"] = "SlabDive-DataMiner/1.0"
+        self.session.headers["User-Agent"] = "DBM3-DataMiner/1.0"
 
         # Index for tracking downloads
         self.index_path = self.output_dir.parent / "index.json"

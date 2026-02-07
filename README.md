@@ -1,6 +1,6 @@
-# SlabDive
+# DBM-3 — Diffusion Barrier Matrix
 
-A computational framework for modelling decompression risk using **slab diffusion physics** (Hempleman's linear bulk diffusion theory) as an alternative to the classical Buhlmann ZH-L16C compartment model. SlabDive generates dive profiles, runs them through both models, and produces divergence matrices comparing their risk predictions across the depth-time envelope.
+A computational framework for modelling decompression risk using **slab diffusion physics** (Hempleman's linear bulk diffusion theory) as an alternative to the classical Buhlmann ZH-L16C compartment model. DBM-3 generates dive profiles, runs them through both models, and produces divergence matrices comparing their risk predictions across the depth-time envelope.
 
 ## Why Slab Diffusion?
 
@@ -14,7 +14,7 @@ The slab diffusion model solves **Fick's Second Law** on a 1D tissue slab using 
 
 ## The Three-Compartment Model
 
-SlabDive models the body as three tissue compartments with distinct diffusion properties, each representing a class of tissue with different gas transport characteristics:
+DBM-3 models the body as three tissue compartments with distinct diffusion properties, each representing a class of tissue with different gas transport characteristics:
 
 ### Spine (Fast)
 - **D = 0.002** -- Highest diffusion coefficient
@@ -47,7 +47,7 @@ Blood ─── [Permeability Barrier] ─── Slice 0 ─── Slice 1 ─�
 
 ## Depth-Dependent M-Values
 
-Rather than using fixed tolerated supersaturation limits, SlabDive derives M-values from the diffusion physics of each slice. Every slice has an **effective half-time** based on its position in the slab:
+Rather than using fixed tolerated supersaturation limits, DBM-3 derives M-values from the diffusion physics of each slice. Every slice has an **effective half-time** based on its position in the slab:
 
 ```
 t_half(i) = ln(2)/permeability + (i * dx)^2 / (C * D)

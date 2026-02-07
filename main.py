@@ -1,5 +1,5 @@
 """
-SlabDive - Interactive Dive Profile Simulator
+DBM-3 — Interactive Dive Profile Simulator
 
 Uses the multi-compartment Slab Diffusion model to simulate nitrogen uptake
 and offgassing for user-defined dive profiles. Supports square, multilevel,
@@ -227,7 +227,7 @@ def plot_results(profile: DiveProfile, result, model: SlabModel) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for quick overrides."""
     parser = argparse.ArgumentParser(
-        description="SlabDive - Slab Diffusion Dive Simulator",
+        description="DBM-3 — Diffusion Barrier Matrix Dive Simulator",
     )
     parser.add_argument("--depth", type=float, help="Dive depth in meters")
     parser.add_argument("--time", type=float, help="Bottom time in minutes")

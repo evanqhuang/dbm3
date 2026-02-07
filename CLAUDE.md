@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Summary
 
-SlabDive is a computational framework for backtesting a Slab Diffusion decompression model (Hempleman's linear bulk diffusion theory) against the established Buhlmann ZH-L16C algorithm. It generates dive profiles, runs them through both models, and produces divergence matrices comparing risk predictions.
+DBM-3 (Diffusion Barrier Matrix) is a computational framework for backtesting a Slab Diffusion decompression model (Hempleman's linear bulk diffusion theory) against the established Buhlmann ZH-L16C algorithm. It generates dive profiles, runs them through both models, and produces divergence matrices comparing risk predictions.
 
 ## Build & Run Commands
 

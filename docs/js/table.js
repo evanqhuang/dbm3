@@ -1,4 +1,4 @@
-// table.js - Profile data table module for SlabDive dashboard
+// table.js - Profile data table module for DBM-3 dashboard
 
 // Module state
 let _tableState = {
