@@ -59,7 +59,8 @@ The libbuhlmann submodule has tests at `libbuhlmann/test/test_all_of_the_units.p
 ### Data Flow
 
 ```
-ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src/dive)
+ProfileGenerator -> DiveProfile -> BuhlmannRunner -> BuhlmannEngine (numpy, default)
+                                                   -> libbuhlmann/src/dive (subprocess, optional)
                                 -> SlabModel (numpy finite difference solver)
                                         |
                                    ModelComparator -> divergence matrices, plots, CSV/JSON reports
@@ -69,6 +70,7 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 - **`DiveProfile`** (`backtest/profile_generator.py`): Sequence of `(time_min, depth_m, fO2, fHe)` tuples. Converts to libbuhlmann text-stream format via `to_buhlmann_format()`.
 - **`BuhlmannResult`** (`backtest/buhlmann_runner.py`): 16-compartment tissue tensions, ceilings, NDL times, max supersaturation, `gf_low` and `gf_high` values. Output parsed from the `src/dive` binary's stdout (36 values per line).
+- **`BuhlmannEngine`** (`backtest/buhlmann_engine.py`): Pure Python/numpy replacement for the C binary. Vectorized Schreiner/Haldane tissue loading across 16 ZH-L16 compartments. Returns raw tissue tensions, ceilings, and NDL in the same format as the C binary parser.
 - **`GradientFactors`** (`backtest/buhlmann_constants.py`): Frozen dataclass with `gf_low` and `gf_high` (0-1.0 fractions). GF 100/100 = standard Buhlmann. GF 70/85 = common conservative setting. `gf_low` controls first stop depth, `gf_high` controls NDL and surface ascent.
 - **`SlabResult`** (`backtest/slab_model.py`): Multi-compartment slab history, critical compartment name, final NDL, max critical volume ratio, ceiling at bottom, optional deco schedule. Risk scores use the critical volume approach: `risk = excess_gas / V_crit`.
 - **`TissueCompartment`** (`backtest/slab_model.py`): Per-compartment state with diffusion coefficient D, slice count, `v_crit` (critical volume threshold for NDL/risk), and `g_crit` (critical gradient at surface for ceiling/deco).
@@ -78,7 +80,7 @@ ProfileGenerator -> DiveProfile -> BuhlmannRunner (subprocess to libbuhlmann/src
 
 ### Model Details
 
-**Buhlmann** (`BuhlmannRunner`): Wraps the C binary via subprocess. Profile data is piped to stdin as `time pressure O2 He` lines. The binary outputs 36 values per line: time, pressure, 16x(N2, He) compartment tensions, ceiling, nodectime. The C binary computes raw tissue tensions; Gradient Factor (GF) adjustments are applied in Python post-processing via `buhlmann_constants.py`. GF modifies M-value limits: at first stop depth, M-values are scaled by `gf_low`; at surface, by `gf_high`. Intermediate depths use linear interpolation. This affects ceiling calculations, NDL, and supersaturation risk scoring. At GF 100/100, all calculations reduce to standard Buhlmann ZH-L16C (backward compatible).
+**Buhlmann** (`BuhlmannRunner`, `BuhlmannEngine`): Pure Python/numpy tissue simulation using ZH-L16 constants (default). Optionally wraps the C binary via subprocess (`use_python_engine=False`). Profile data is piped to stdin as `time pressure O2 He` lines. The binary outputs 36 values per line: time, pressure, 16x(N2, He) compartment tensions, ceiling, nodectime. The C binary computes raw tissue tensions; Gradient Factor (GF) adjustments are applied in Python post-processing via `buhlmann_constants.py`. GF modifies M-value limits: at first stop depth, M-values are scaled by `gf_low`; at surface, by `gf_high`. Intermediate depths use linear interpolation. This affects ceiling calculations, NDL, and supersaturation risk scoring. At GF 100/100, all calculations reduce to standard Buhlmann ZH-L16C (backward compatible).
 
 **Slab Model** (`SlabModel`): Multi-compartment finite difference solver (Fick's Second Law). Default 3 compartments configured in `config.yaml`:
 - Spine (fast, D=0.002) - sensitive, fastest gas uptake
@@ -122,7 +124,7 @@ Each compartment is a 1D slab with: perfect perfusion at slice[0] (blood-tissue 
 
 ### Parallel Processing
 
-`ModelComparator.compare_batch()` uses `ThreadPoolExecutor` for Buhlmann (I/O-bound subprocess calls) and `ProcessPoolExecutor` for Slab (CPU-bound numpy). Helper functions `_run_buhlmann_single` and `_run_slab_single` are module-level for pickling compatibility.
+`ModelComparator.compare_batch()` uses `ProcessPoolExecutor` for Buhlmann (CPU-bound Python engine) and `ProcessPoolExecutor` for Slab (CPU-bound numpy). Helper functions `_run_buhlmann_single` and `_run_slab_single` are module-level for pickling compatibility.
 
 ### Configuration
 

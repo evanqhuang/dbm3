@@ -115,6 +115,7 @@ backtest/__pycache__/
 backtest_output/
 backtest_output_full/
 backtest_output_real/
-data/
+data/*
+!data/gf_sweep.json
 *.pyc
 __pycache__/

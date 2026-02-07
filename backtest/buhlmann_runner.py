@@ -18,6 +18,7 @@ from .buhlmann_constants import (
     compute_ndl_gf,
     compute_max_supersaturation_gf,
 )
+from .buhlmann_engine import BuhlmannEngine
 
 
 @dataclass
@@ -72,6 +73,7 @@ class BuhlmannRunner:
         self,
         binary_path: Optional[str] = None,
         gf: Optional[GradientFactors] = None,
+        use_python_engine: bool = True,
     ):
         """
         Initialize the runner.
@@ -79,33 +81,41 @@ class BuhlmannRunner:
         Args:
             binary_path: Path to the dive binary. If None, auto-detect.
             gf: Gradient factors for M-value adjustments. Defaults to GF 100/100.
+            use_python_engine: If True, use Python engine; if False, use C binary.
         """
         self.gf = gf or GF_DEFAULT
-        if binary_path is None:
-            # Auto-detect binary location
-            possible_paths = [
-                Path(__file__).parent.parent / "libbuhlmann" / "src" / "dive",
-                Path("libbuhlmann/src/dive"),
-                Path("./src/dive"),
-            ]
-            for path in possible_paths:
-                if path.exists():
-                    binary_path = str(path.resolve())
-                    break
+        self.use_python_engine = use_python_engine
 
+        if use_python_engine:
+            self.engine = BuhlmannEngine()
+            self.binary_path = None
+        else:
+            self.engine = None
             if binary_path is None:
-                raise FileNotFoundError(
-                    "Could not find libbuhlmann dive binary. "
-                    "Please compile it or specify the path."
-                )
+                # Auto-detect binary location
+                possible_paths = [
+                    Path(__file__).parent.parent / "libbuhlmann" / "src" / "dive",
+                    Path("libbuhlmann/src/dive"),
+                    Path("./src/dive"),
+                ]
+                for path in possible_paths:
+                    if path.exists():
+                        binary_path = str(path.resolve())
+                        break
 
-        self.binary_path = binary_path
+                if binary_path is None:
+                    raise FileNotFoundError(
+                        "Could not find libbuhlmann dive binary. "
+                        "Please compile it or specify the path."
+                    )
 
-        # Verify binary exists and is executable
-        if not os.path.isfile(self.binary_path):
-            raise FileNotFoundError(f"Binary not found: {self.binary_path}")
-        if not os.access(self.binary_path, os.X_OK):
-            raise PermissionError(f"Binary not executable: {self.binary_path}")
+            self.binary_path = binary_path
+
+            # Verify binary exists and is executable
+            if not os.path.isfile(self.binary_path):
+                raise FileNotFoundError(f"Binary not found: {self.binary_path}")
+            if not os.access(self.binary_path, os.X_OK):
+                raise PermissionError(f"Binary not executable: {self.binary_path}")
 
     def run(self, profile: DiveProfile) -> BuhlmannResult:
         """
@@ -117,6 +127,22 @@ class BuhlmannRunner:
         Returns:
             BuhlmannResult with compartment states and risk metrics
         """
+        if self.use_python_engine:
+            return self._run_python(profile)
+        else:
+            return self._run_binary(profile)
+
+    def _run_binary(self, profile: DiveProfile) -> BuhlmannResult:
+        """
+        Run profile through C binary subprocess.
+
+        Args:
+            profile: DiveProfile object with dive data
+
+        Returns:
+            BuhlmannResult with compartment states and risk metrics
+        """
+        assert self.binary_path is not None
         # Convert profile to libbuhlmann input format
         input_data = profile.to_buhlmann_format()
 
@@ -136,6 +162,20 @@ class BuhlmannRunner:
 
         # Parse output
         return self._parse_output(stdout)
+
+    def _run_python(self, profile: DiveProfile) -> BuhlmannResult:
+        """
+        Run profile through Python engine.
+
+        Args:
+            profile: DiveProfile object with dive data
+
+        Returns:
+            BuhlmannResult with compartment states and risk metrics
+        """
+        assert self.engine is not None
+        raw = self.engine.simulate(profile)
+        return self._build_result(raw)
 
     def _parse_output(self, output: str) -> BuhlmannResult:
         """
@@ -193,8 +233,36 @@ class BuhlmannRunner:
         if not times:
             raise ValueError("No valid output from libbuhlmann")
 
+        raw = {
+            'times': times,
+            'pressures': pressures,
+            'compartment_n2': compartment_n2,
+            'compartment_he': compartment_he,
+            'ceilings': ceilings,
+            'ndl_times': ndl_times,
+        }
+        return self._build_result(raw)
+
+    def _build_result(self, raw: dict) -> BuhlmannResult:
+        """
+        Build BuhlmannResult from raw data, applying GF adjustments if needed.
+
+        Args:
+            raw: Dictionary with keys: times, pressures, compartment_n2,
+                 compartment_he, ceilings, ndl_times
+
+        Returns:
+            BuhlmannResult with GF-adjusted metrics
+        """
+        times = raw['times']
+        pressures = raw['pressures']
+        compartment_n2 = raw['compartment_n2']
+        compartment_he = raw['compartment_he']
+        ceilings = raw['ceilings']
+        ndl_times = raw['ndl_times']
+
         if self.gf.is_standard:
-            # GF 100/100: use raw C binary values
+            # GF 100/100: use raw values
             max_ceiling = max(ceilings)
             min_ndl = min(ndl_times)
             max_supersaturation = self._calculate_max_supersaturation(
@@ -288,7 +356,7 @@ if __name__ == "__main__":
     gen = ProfileGenerator()
     profile = gen.generate_square(depth=20, bottom_time=5)
 
-    runner = BuhlmannRunner()
+    runner = BuhlmannRunner(use_python_engine=False)
     result = runner.run(profile)
 
     print(f"Profile: {profile.name}")

@@ -10,12 +10,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import cpu_count
 import time as time_module
 
 from .profile_generator import ProfileGenerator, DiveProfile
 from .buhlmann_runner import BuhlmannRunner, BuhlmannResult
+from .buhlmann_engine import BuhlmannEngine
 from .slab_model import SlabModel, SlabResult
 from .buhlmann_constants import (
     GradientFactors,
@@ -27,121 +28,61 @@ from .buhlmann_constants import (
 
 
 def _run_buhlmann_single(
-    binary_path: str, profile: DiveProfile, gf_low: float = 1.0, gf_high: float = 1.0
+    profile: DiveProfile, gf_low: float = 1.0, gf_high: float = 1.0
 ) -> Optional[BuhlmannResult]:
-    """Helper function for parallel Bühlmann execution.
-
-    Args:
-        binary_path: Path to libbuhlmann dive binary.
-        profile: Dive profile to process.
-        gf_low: Gradient factor low (primitive for thread safety).
-        gf_high: Gradient factor high (primitive for thread safety).
-    """
-    import subprocess
-
+    """Helper function for parallel Bühlmann execution (Python engine)."""
     try:
-        input_data = profile.to_buhlmann_format()
-        process = subprocess.Popen(
-            [binary_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        stdout, stderr = process.communicate(input=input_data)
-        if process.returncode != 0:
-            return None
-        return _parse_buhlmann_output(stdout, gf_low, gf_high)
-    except Exception:
-        return None
+        engine = BuhlmannEngine()
+        raw = engine.simulate(profile)
 
+        times = raw['times']
+        pressures = raw['pressures']
+        compartment_n2 = raw['compartment_n2']
+        compartment_he = raw['compartment_he']
+        ceilings = raw['ceilings']
+        ndl_times = raw['ndl_times']
 
-def _parse_buhlmann_output(
-    output: str, gf_low: float = 1.0, gf_high: float = 1.0
-) -> Optional[BuhlmannResult]:
-    """Parse libbuhlmann output and apply GF adjustments."""
-    times = []
-    pressures = []
-    compartment_n2 = []
-    compartment_he = []
-    ceilings = []
-    ndl_times = []
-    num_compartments = 16
+        is_standard = (gf_low == 1.0 and gf_high == 1.0)
 
-    for line in output.strip().split("\n"):
-        if not line.strip():
-            continue
-        values = line.split()
-        if len(values) < 36:
-            continue
-        try:
-            time = float(values[0])
-            pressure = float(values[1])
-            n2_values = []
-            he_values = []
-            for i in range(num_compartments):
-                n2_idx = 2 + i * 2
-                he_idx = 3 + i * 2
-                n2_values.append(float(values[n2_idx]))
-                he_values.append(float(values[he_idx]))
-            ceiling = float(values[-2])
-            ndl = float(values[-1])
-            times.append(time)
-            pressures.append(pressure)
-            compartment_n2.append(n2_values)
-            compartment_he.append(he_values)
-            ceilings.append(ceiling)
-            ndl_times.append(ndl)
-        except (ValueError, IndexError):
-            continue
+        if not is_standard:
+            gf_ceilings = []
+            gf_ndls = []
+            for t_idx in range(len(times)):
+                ceil, _ = compute_ceilings_gf(
+                    compartment_n2[t_idx], compartment_he[t_idx], gf_low
+                )
+                gf_ceilings.append(ceil)
+                ndl = compute_ndl_gf(
+                    compartment_n2[t_idx], compartment_he[t_idx],
+                    pressures[t_idx], 0.79, gf_high,
+                )
+                gf_ndls.append(ndl)
+            ceilings = gf_ceilings
+            ndl_times = gf_ndls
 
-    if not times:
-        return None
-
-    is_standard = (gf_low == 1.0 and gf_high == 1.0)
-
-    if is_standard:
-        max_ceiling = max(ceilings)
-        min_ndl = min(ndl_times)
-        max_supersaturation = compute_max_supersaturation_gf(
-            compartment_n2, compartment_he, pressures, 1.0, 1.0
-        )
-    else:
-        # Recalculate with GF-adjusted M-values
-        gf_ceilings = []
-        gf_ndls = []
-        for t_idx in range(len(times)):
-            ceil, _ = compute_ceilings_gf(
-                compartment_n2[t_idx], compartment_he[t_idx], gf_low
-            )
-            gf_ceilings.append(ceil)
-            ndl = compute_ndl_gf(
-                compartment_n2[t_idx], compartment_he[t_idx],
-                pressures[t_idx], 0.79, gf_high,
-            )
-            gf_ndls.append(ndl)
-
-        ceilings = gf_ceilings
-        ndl_times = gf_ndls
-        max_ceiling = max(ceilings)
-        min_ndl = min(ndl_times)
+        max_ceiling = max(ceilings) if ceilings else 0.0
+        min_ndl = min(ndl_times) if ndl_times else 100.0
         max_supersaturation = compute_max_supersaturation_gf(
             compartment_n2, compartment_he, pressures, gf_low, gf_high
         )
 
-    return BuhlmannResult(
-        times=times,
-        pressures=pressures,
-        compartment_n2=compartment_n2,
-        compartment_he=compartment_he,
-        ceilings=ceilings,
-        ndl_times=ndl_times,
-        max_ceiling=max_ceiling,
-        min_ndl=min_ndl,
-        max_supersaturation=max_supersaturation,
-        gf_low=gf_low,
-        gf_high=gf_high,
-    )
+        return BuhlmannResult(
+            times=times,
+            pressures=pressures,
+            compartment_n2=compartment_n2,
+            compartment_he=compartment_he,
+            ceilings=ceilings,
+            ndl_times=ndl_times,
+            max_ceiling=max_ceiling,
+            min_ndl=min_ndl,
+            max_supersaturation=max_supersaturation,
+            gf_low=gf_low,
+            gf_high=gf_high,
+        )
+    except Exception:
+        return None
+
+
 
 
 def _run_slab_single(slab_params: dict, profile: DiveProfile) -> Optional[SlabResult]:
@@ -310,6 +251,9 @@ class ModelComparator:
                 )
 
         self.buhlmann = buhlmann_runner or BuhlmannRunner(gf=self.gf)
+        if buhlmann_runner is not None:
+            self.gf = buhlmann_runner.gf  # Honor caller's GF override
+
         if slab_model is not None:
             self.slab = slab_model
         else:
@@ -398,8 +342,8 @@ class ModelComparator:
         """
         Run batch comparison using parallel processing.
 
-        Uses ProcessPoolExecutor for CPU-bound Slab model calculations
-        and ThreadPoolExecutor for I/O-bound Bühlmann subprocess calls.
+        Uses ProcessPoolExecutor for both CPU-bound Slab model calculations
+        and CPU-bound Bühlmann Python engine calculations.
         """
         total = len(profiles)
         start_time = time_module.time()
@@ -412,13 +356,12 @@ class ModelComparator:
         buhlmann_results = [None] * total
         slab_results = [None] * total
 
-        # Bühlmann: Use ThreadPoolExecutor (I/O bound - subprocess calls)
-        binary_path = self.buhlmann.binary_path
+        # Bühlmann: Use ProcessPoolExecutor (CPU bound - Python engine)
         gf_low = self.gf.gf_low
         gf_high = self.gf.gf_high
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {
-                executor.submit(_run_buhlmann_single, binary_path, p, gf_low, gf_high): i
+                executor.submit(_run_buhlmann_single, p, gf_low, gf_high): i
                 for i, p in enumerate(profiles)
             }
             completed = 0
@@ -551,6 +494,13 @@ class ModelComparator:
 
         return matrices
 
+    @staticmethod
+    def _safe_nanmax_abs(arr: np.ndarray, default: float = 0.0) -> float:
+        """Return max(|nanmin|, |nanmax|) of array, or default if all NaN."""
+        if np.all(np.isnan(arr)):
+            return default
+        return max(abs(np.nanmin(arr)), abs(np.nanmax(arr)))
+
     def plot_divergence_matrix(
         self,
         depths: List[float],
@@ -575,8 +525,7 @@ class ModelComparator:
         fig, ax = plt.subplots(figsize=(12, 8))
 
         # Use diverging colormap centered at 0
-        vmax = max(abs(np.nanmin(delta_matrix)), abs(np.nanmax(delta_matrix)))
-        vmax = max(vmax, 0.1)  # Ensure some range
+        vmax = max(self._safe_nanmax_abs(delta_matrix), 0.1)
 
         im = ax.imshow(
             delta_matrix,
@@ -653,7 +602,9 @@ class ModelComparator:
         extent = [min(depths), max(depths), min(times), max(times)]
 
         # Panel 1: Bühlmann risk
-        vmax_risk = max(np.nanmax(buhlmann_matrix), np.nanmax(slab_matrix), 1.0)
+        bmax = np.nanmax(buhlmann_matrix) if not np.all(np.isnan(buhlmann_matrix)) else 0.0
+        smax = np.nanmax(slab_matrix) if not np.all(np.isnan(slab_matrix)) else 0.0
+        vmax_risk = max(bmax, smax, 1.0)
         im1 = axes[0].imshow(
             buhlmann_matrix,
             aspect="auto",
@@ -705,9 +656,7 @@ class ModelComparator:
             )
 
         # Panel 3: Divergence
-        vmax_delta = max(
-            abs(np.nanmin(delta_matrix)), abs(np.nanmax(delta_matrix)), 0.1
-        )
+        vmax_delta = max(self._safe_nanmax_abs(delta_matrix), 0.1)
         im3 = axes[2].imshow(
             delta_matrix,
             aspect="auto",

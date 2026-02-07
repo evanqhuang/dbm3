@@ -11,6 +11,7 @@ Modules:
 
 from .profile_generator import DiveProfile, ProfileGenerator
 from .buhlmann_runner import BuhlmannRunner
+from .buhlmann_engine import BuhlmannEngine
 from .buhlmann_constants import GradientFactors, GF_DEFAULT
 from .slab_model import SlabModel
 from .comparator import ModelComparator
@@ -20,6 +21,7 @@ __all__ = [
     "DiveProfile",
     "ProfileGenerator",
     "BuhlmannRunner",
+    "BuhlmannEngine",
     "GradientFactors",
     "GF_DEFAULT",
     "SlabModel",

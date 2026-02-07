@@ -6,6 +6,7 @@ All functions are pure (no side effects) for safe use in parallel execution path
 """
 
 import math
+import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -246,3 +247,98 @@ def compute_max_supersaturation_gf(
                     max_ratio = ratio
 
     return max_ratio
+
+
+# ---------------------------------------------------------------------------
+# Physiological constants (matching libbuhlmann C binary)
+# ---------------------------------------------------------------------------
+WATER_VAPOR_PRESSURE = 0.0627   # bar
+CO2_PRESSURE = 0.0534           # bar
+BUHLMANN_RQ = 1.0               # Respiratory quotient
+SURFACE_N2_FRACTION = 0.78084   # Atmospheric N2 fraction
+P_SURFACE = 1.01325             # Sea level pressure (bar)
+
+# ---------------------------------------------------------------------------
+# ZH-L16 He compartment parameters (16 compartments, from ZH-L16C table)
+# Compartment 1b (halftime 1.88 min) is excluded to match 16-compartment layout.
+# ---------------------------------------------------------------------------
+ZH_L16_HE_HALFTIMES: Tuple[float, ...] = (
+    1.51, 3.02, 4.72, 6.99, 10.21, 14.48, 20.53, 29.11,
+    41.20, 55.19, 70.69, 90.34, 115.29, 147.42, 188.24, 240.03,
+)
+
+ZH_L16_HE_A: Tuple[float, ...] = (
+    1.7424, 1.3830, 1.1919, 1.0458, 0.9220, 0.8205, 0.7305, 0.6502,
+    0.5950, 0.5545, 0.5333, 0.5189, 0.5181, 0.5176, 0.5172, 0.5119,
+)
+
+ZH_L16_HE_B: Tuple[float, ...] = (
+    0.4245, 0.5747, 0.6527, 0.7223, 0.7582, 0.7957, 0.8279, 0.8553,
+    0.8757, 0.8903, 0.8997, 0.9073, 0.9122, 0.9171, 0.9217, 0.9267,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tissue loading equations (vectorized for numpy)
+# ---------------------------------------------------------------------------
+
+def alveolar_pressure(
+    ambient_pressure: float, gas_fraction: float, rq: float = BUHLMANN_RQ
+) -> float:
+    """Compute alveolar partial pressure of an inert gas.
+
+    Matches libbuhlmann ventilation():
+        palv = (pamb - WVP + (1-RQ)/RQ * CO2) * gas_fraction
+    With RQ=1.0 this simplifies to: (pamb - 0.0627) * gas_fraction
+    """
+    return (
+        ambient_pressure - WATER_VAPOR_PRESSURE
+        + (1.0 - rq) / rq * CO2_PRESSURE
+    ) * gas_fraction
+
+
+def schreiner_vec(
+    pt0: np.ndarray,
+    palv0: float,
+    r: float,
+    t: float,
+    k: np.ndarray,
+) -> np.ndarray:
+    """Vectorized Schreiner equation across compartments.
+
+    Computes new tissue pressure after time t with linearly changing
+    ambient pressure (descent/ascent).
+
+    Args:
+        pt0:   current tissue pressures, shape (N,)
+        palv0: alveolar pressure at START of interval (scalar, broadcasts)
+        r:     rate of change of alveolar pressure (bar/min, scalar)
+        t:     time interval (minutes)
+        k:     pre-computed ln(2)/halftime per compartment, shape (N,)
+
+    Returns:
+        New tissue pressures, shape (N,)
+    """
+    return palv0 + r * (t - 1.0 / k) - (palv0 - pt0 - r / k) * np.exp(-k * t)
+
+
+def haldane_vec(
+    pt0: np.ndarray,
+    palv0: float,
+    t: float,
+    k: np.ndarray,
+) -> np.ndarray:
+    """Vectorized Haldane equation across compartments.
+
+    Computes new tissue pressure after time t at constant ambient pressure.
+
+    Args:
+        pt0:   current tissue pressures, shape (N,)
+        palv0: alveolar pressure (constant, scalar)
+        t:     time interval (minutes)
+        k:     pre-computed ln(2)/halftime per compartment, shape (N,)
+
+    Returns:
+        New tissue pressures, shape (N,)
+    """
+    return pt0 + (palv0 - pt0) * (1.0 - np.exp(-k * t))
