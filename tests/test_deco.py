@@ -667,6 +667,476 @@ class TestBoyleExponentScaling:
                 f"exponent {exponents[i+1]} ceiling ({ceilings[i+1]}m)"
 
 
+class TestSlabModelRun:
+    """Test SlabModel.run() - the main profile execution pipeline."""
+
+    def test_run_square_30m_20min_returns_valid_result(self):
+        """Running 30m/20min produces SlabResult with all fields populated."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=30, bottom_time=20)
+
+        result = model.run(profile)
+
+        # Verify all key fields are populated
+        assert len(result.times) > 0, "times should be populated"
+        assert len(result.depths) > 0, "depths should be populated"
+        assert result.slab_history.size > 0, "slab_history should be populated"
+        assert len(result.final_slabs) == 3, "final_slabs should have 3 compartments"
+        assert result.critical_compartment in ["Spine", "Muscle", "Joints"]
+
+    def test_run_shallow_dive_low_risk(self):
+        """10m/10min produces max_cv_ratio < 0.5."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=10, bottom_time=10)
+
+        result = model.run(profile)
+
+        assert result.max_cv_ratio < 0.5, \
+            f"Shallow dive should have low risk, got {result.max_cv_ratio:.3f}"
+
+    def test_run_risk_increases_with_depth(self):
+        """30m/20min has higher max_cv_ratio than 20m/20min."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+
+        profile_20m = gen.generate_square(depth=20, bottom_time=20)
+        result_20m = model.run(profile_20m)
+
+        # Reset tissue state
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        for comp in model.compartments:
+            comp.slab[:] = ppn2_surface
+
+        profile_30m = gen.generate_square(depth=30, bottom_time=20)
+        result_30m = model.run(profile_30m)
+
+        assert result_30m.max_cv_ratio > result_20m.max_cv_ratio, \
+            f"30m risk {result_30m.max_cv_ratio:.3f} should be > 20m risk {result_20m.max_cv_ratio:.3f}"
+
+    def test_run_risk_increases_with_time(self):
+        """30m/30min has higher max_cv_ratio than 30m/10min."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+
+        profile_10min = gen.generate_square(depth=30, bottom_time=10)
+        result_10min = model.run(profile_10min)
+
+        # Reset tissue state
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        for comp in model.compartments:
+            comp.slab[:] = ppn2_surface
+
+        profile_30min = gen.generate_square(depth=30, bottom_time=30)
+        result_30min = model.run(profile_30min)
+
+        assert result_30min.max_cv_ratio > result_10min.max_cv_ratio, \
+            f"30min risk {result_30min.max_cv_ratio:.3f} should be > 10min risk {result_10min.max_cv_ratio:.3f}"
+
+    def test_run_ndl_decreases_with_depth(self):
+        """final_ndl at 30m < final_ndl at 20m (same time 10min)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+
+        profile_20m = gen.generate_square(depth=20, bottom_time=10)
+        result_20m = model.run(profile_20m)
+
+        # Reset tissue state
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        for comp in model.compartments:
+            comp.slab[:] = ppn2_surface
+
+        profile_30m = gen.generate_square(depth=30, bottom_time=10)
+        result_30m = model.run(profile_30m)
+
+        assert result_30m.final_ndl < result_20m.final_ndl, \
+            f"30m NDL {result_30m.final_ndl:.1f} should be < 20m NDL {result_20m.final_ndl:.1f}"
+
+    def test_run_final_slabs_has_all_compartments(self):
+        """final_slabs has keys 'Spine', 'Muscle', 'Joints'."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=25, bottom_time=15)
+
+        result = model.run(profile)
+
+        assert "Spine" in result.final_slabs, "final_slabs missing 'Spine'"
+        assert "Muscle" in result.final_slabs, "final_slabs missing 'Muscle'"
+        assert "Joints" in result.final_slabs, "final_slabs missing 'Joints'"
+
+    def test_run_slab_history_shape(self):
+        """slab_history shape = [time_steps, 3, 20]."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=20, bottom_time=10)
+
+        result = model.run(profile)
+
+        # Shape should be [time_steps, num_compartments, slices_per_compartment]
+        assert result.slab_history.ndim == 3, "slab_history should be 3D"
+        assert result.slab_history.shape[1] == 3, "should have 3 compartments"
+        assert result.slab_history.shape[2] == 20, "should have 20 slices"
+
+    def test_run_critical_compartment_is_valid_name(self):
+        """critical_compartment in ['Spine', 'Muscle', 'Joints']."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=30, bottom_time=25)
+
+        result = model.run(profile)
+
+        assert result.critical_compartment in ["Spine", "Muscle", "Joints"], \
+            f"Invalid critical_compartment: {result.critical_compartment}"
+
+    def test_run_min_margin_consistent_with_cv_ratio(self):
+        """min_margin == pytest.approx(1.0 - max_cv_ratio)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+        profile = gen.generate_square(depth=25, bottom_time=20)
+
+        result = model.run(profile)
+
+        expected_margin = 1.0 - result.max_cv_ratio
+        assert result.min_margin == pytest.approx(expected_margin, abs=1e-6), \
+            f"min_margin {result.min_margin:.6f} != 1.0 - max_cv_ratio {expected_margin:.6f}"
+
+    def test_run_ceiling_at_bottom_nonnegative(self):
+        """ceiling_at_bottom >= 0 for any profile."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+        gen = ProfileGenerator()
+
+        test_profiles = [
+            (10, 10),
+            (20, 15),
+            (30, 25),
+            (40, 20),
+        ]
+
+        for depth, bottom_time in test_profiles:
+            profile = gen.generate_square(depth=depth, bottom_time=bottom_time)
+            result = model.run(profile)
+            assert result.ceiling_at_bottom >= 0.0, \
+                f"ceiling_at_bottom negative at {depth}m/{bottom_time}min: {result.ceiling_at_bottom}"
+
+
+class TestMultiCompartmentNDL:
+    """Test calculate_multi_compartment_ndl() - shadow simulation NDL."""
+
+    def test_ndl_surface_equilibrated_is_max(self):
+        """Initialize model, get fresh slabs at surface equilibrium, NDL at surface should be max_time (100)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Fresh tissue at surface
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        fresh_slabs = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+
+        ndl = model.calculate_multi_compartment_ndl(fresh_slabs, depth=0.0, max_time=100)
+
+        assert ndl == 100, f"Surface NDL should be max_time (100), got {ndl}"
+
+    def test_ndl_at_30m_reference_near_28min(self):
+        """At 30m with fresh tissue, NDL should be approximately 28 minutes (calibration reference, ±5 tolerance)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Fresh tissue at surface
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        fresh_slabs = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+
+        ndl = model.calculate_multi_compartment_ndl(fresh_slabs, depth=30.0, max_time=100)
+
+        assert 23 <= ndl <= 33, \
+            f"30m NDL should be approximately 28 minutes (±5), got {ndl}"
+
+    def test_ndl_deeper_is_shorter(self):
+        """NDL at 40m < NDL at 30m with fresh tissue."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Fresh tissue at surface
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        fresh_slabs_30 = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+        fresh_slabs_40 = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+
+        ndl_30 = model.calculate_multi_compartment_ndl(fresh_slabs_30, depth=30.0, max_time=100)
+        ndl_40 = model.calculate_multi_compartment_ndl(fresh_slabs_40, depth=40.0, max_time=100)
+
+        assert ndl_40 < ndl_30, \
+            f"40m NDL {ndl_40} should be < 30m NDL {ndl_30}"
+
+    def test_ndl_preloaded_shorter_than_fresh(self):
+        """Pre-load tissue by simulating time at depth, then check NDL < fresh NDL."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Fresh tissue
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        fresh_slabs = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+
+        ndl_fresh = model.calculate_multi_compartment_ndl(fresh_slabs, depth=30.0, max_time=100)
+
+        # Pre-load tissue: simulate 10 minutes at 30m
+        preloaded_slabs = model._simulate_time_at_depth(fresh_slabs, depth=30.0, duration_min=10.0)
+
+        ndl_preloaded = model.calculate_multi_compartment_ndl(preloaded_slabs, depth=30.0, max_time=100)
+
+        assert ndl_preloaded < ndl_fresh, \
+            f"Preloaded NDL {ndl_preloaded} should be < fresh NDL {ndl_fresh}"
+
+    def test_ndl_capped_at_max_time(self):
+        """NDL at shallow depth (5m) should be capped at max_time."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        # Fresh tissue
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        fresh_slabs = [np.full(comp.slices, ppn2_surface) for comp in model.compartments]
+
+        ndl = model.calculate_multi_compartment_ndl(fresh_slabs, depth=5.0, max_time=100)
+
+        assert ndl == 100, f"Shallow NDL should be capped at max_time (100), got {ndl}"
+
+
+class TestAtmosphericPressure:
+    """Test _get_atmospheric_pressure() - barometric formula."""
+
+    def test_sea_level_pressure(self):
+        """altitude=0 -> pytest.approx(1.01325)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        pressure = model._get_atmospheric_pressure(altitude_m=0.0)
+
+        assert pressure == pytest.approx(1.01325, abs=0.0001), \
+            f"Sea level pressure should be 1.01325 bar, got {pressure}"
+
+    def test_negative_altitude_clamps(self):
+        """altitude=-100 -> 1.01325 (clamped)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        pressure = model._get_atmospheric_pressure(altitude_m=-100.0)
+
+        assert pressure == pytest.approx(1.01325, abs=0.0001), \
+            f"Negative altitude should clamp to 1.01325 bar, got {pressure}"
+
+    def test_high_altitude_lower(self):
+        """altitude=2000 -> pressure < 1.01325 (verify barometric formula)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        pressure = model._get_atmospheric_pressure(altitude_m=2000.0)
+
+        assert pressure < 1.01325, \
+            f"High altitude pressure should be < 1.01325 bar, got {pressure}"
+
+    def test_very_high_altitude(self):
+        """altitude=5300 -> approximately 0.527 bar (±0.05)."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        pressure = model._get_atmospheric_pressure(altitude_m=5300.0)
+
+        assert pytest.approx(pressure, abs=0.05) == 0.527, \
+            f"5300m altitude pressure should be approximately 0.527 bar, got {pressure}"
+
+
+class TestPPN2Calculation:
+    """Test _get_ppn2() - nitrogen partial pressure."""
+
+    def test_ppn2_at_surface_air(self):
+        """ppN2 = 1.01325 * 0.79 ≈ 0.8005."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        ppn2 = model._get_ppn2(depth_m=0.0)
+
+        expected = 1.01325 * 0.79
+        assert ppn2 == pytest.approx(expected, abs=0.001), \
+            f"Surface ppN2 should be {expected:.4f}, got {ppn2:.4f}"
+
+    def test_ppn2_at_30m_air(self):
+        """ppN2 = (1.01325 + 3.0) * 0.79 ≈ 3.17."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        ppn2 = model._get_ppn2(depth_m=30.0)
+
+        expected = (1.01325 + 3.0) * 0.79
+        assert ppn2 == pytest.approx(expected, abs=0.01), \
+            f"30m ppN2 should be {expected:.2f}, got {ppn2:.2f}"
+
+    def test_ppn2_with_nitrox_32(self):
+        """At 20m on EAN32: ppN2 = (1.01325 + 2.0) * 0.68."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        ppn2 = model._get_ppn2(depth_m=20.0, f_o2=0.32)
+
+        expected = (1.01325 + 2.0) * 0.68
+        assert ppn2 == pytest.approx(expected, abs=0.01), \
+            f"20m EAN32 ppN2 should be {expected:.2f}, got {ppn2:.2f}"
+
+    def test_ppn2_increases_with_depth(self):
+        """ppN2_30m > ppN2_20m > ppN2_10m."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        ppn2_10 = model._get_ppn2(depth_m=10.0)
+        ppn2_20 = model._get_ppn2(depth_m=20.0)
+        ppn2_30 = model._get_ppn2(depth_m=30.0)
+
+        assert ppn2_30 > ppn2_20 > ppn2_10, \
+            f"ppN2 should increase with depth: {ppn2_10:.2f} < {ppn2_20:.2f} < {ppn2_30:.2f}"
+
+
+class TestUpdateCompartment:
+    """Test _update_compartment() - finite difference step. Access compartment objects directly."""
+
+    def test_perfect_perfusion_sets_boundary(self):
+        """After update with permeability=None, slab[0] == boundary_pressure."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml', permeability=None)
+        comp = model.compartments[0]
+
+        # Initialize slab to surface equilibrium
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+        comp.slab[:] = ppn2_surface
+
+        # Update with different boundary pressure
+        boundary_pressure = ppn2_surface + 1.0
+        model._update_compartment(comp, boundary_pressure)
+
+        assert comp.slab[0] == pytest.approx(boundary_pressure, abs=1e-9), \
+            f"With perfect perfusion, slab[0] should equal boundary_pressure"
+
+    def test_diffusion_moves_gas_inward(self):
+        """After many steps with slab[0] > slab[1], slab[1] increases."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml', permeability=None)
+        comp = model.compartments[0]
+
+        # Initialize slab uniformly low
+        comp.slab[:] = 0.5
+
+        # Set boundary high, interior low
+        boundary_pressure = 2.0
+        initial_slab_1 = comp.slab[1]
+
+        # Run many steps
+        for _ in range(100):
+            model._update_compartment(comp, boundary_pressure)
+
+        assert comp.slab[1] > initial_slab_1, \
+            f"After diffusion, slab[1] should increase from {initial_slab_1:.3f} to {comp.slab[1]:.3f}"
+
+    def test_no_flux_boundary_at_core(self):
+        """After update, slab[-1] == slab[-2]."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml', permeability=None)
+        comp = model.compartments[0]
+
+        # Initialize with gradient
+        comp.slab[:] = np.linspace(0.5, 1.5, comp.slices)
+
+        # Update
+        boundary_pressure = 2.0
+        model._update_compartment(comp, boundary_pressure)
+
+        assert comp.slab[-1] == pytest.approx(comp.slab[-2], abs=1e-9), \
+            f"No-flux boundary: slab[-1] {comp.slab[-1]:.6f} should equal slab[-2] {comp.slab[-2]:.6f}"
+
+
+class TestComputeExcessGas:
+    """Test _compute_excess_gas() - integrated excess volume."""
+
+    def test_no_excess_at_equilibrium(self):
+        """Slab uniformly at ppN2_surface -> excess = 0.0."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+
+        slab = np.full(20, ppn2_surface)
+        excess = model._compute_excess_gas(slab, reference_ppn2=ppn2_surface)
+
+        assert excess == pytest.approx(0.0, abs=1e-9), \
+            f"At equilibrium, excess should be 0.0, got {excess}"
+
+    def test_excess_proportional_to_loading(self):
+        """Slab uniformly at value above reference -> excess = (val - ref) * slices * dx."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        reference = 1.0
+        value = 1.5
+        slices = 20
+
+        slab = np.full(slices, value)
+        excess = model._compute_excess_gas(slab, reference_ppn2=reference)
+
+        expected = (value - reference) * slices * model.dx
+        assert excess == pytest.approx(expected, abs=1e-6), \
+            f"Excess should be {expected:.6f}, got {excess:.6f}"
+
+    def test_partial_excess_only_above_reference(self):
+        """Half slices above, half below reference -> only above contribute."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        reference = 1.0
+        slices = 20
+
+        # First half below reference, second half above
+        slab = np.concatenate([
+            np.full(slices // 2, reference - 0.5),
+            np.full(slices // 2, reference + 0.5),
+        ])
+
+        excess = model._compute_excess_gas(slab, reference_ppn2=reference)
+
+        # Only the second half contributes
+        expected = 0.5 * (slices // 2) * model.dx
+        assert excess == pytest.approx(expected, abs=1e-6), \
+            f"Partial excess should be {expected:.6f}, got {excess:.6f}"
+
+    def test_default_reference_is_surface(self):
+        """Calling without reference_ppn2 uses surface N2 pressure."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        p_surface = model._get_atmospheric_pressure()
+        ppn2_surface = p_surface * (1 - model.f_o2)
+
+        slab = np.full(20, ppn2_surface + 0.5)
+
+        # Call without reference
+        excess_default = model._compute_excess_gas(slab)
+
+        # Call with explicit reference
+        excess_explicit = model._compute_excess_gas(slab, reference_ppn2=ppn2_surface)
+
+        assert excess_default == pytest.approx(excess_explicit, abs=1e-9), \
+            f"Default reference should match explicit surface ppN2"
+
+
+class TestGetCompartmentConfig:
+    """Test get_compartment_config()."""
+
+    def test_config_has_three_compartments(self):
+        """Returns list of 3 dicts."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        config = model.get_compartment_config()
+
+        assert isinstance(config, list), "config should be a list"
+        assert len(config) == 3, f"Should have 3 compartments, got {len(config)}"
+
+    def test_config_fields_present(self):
+        """Each dict has keys: name, D, slices, v_crit, g_crit."""
+        model = SlabModel(config_path='/Users/evanhuang/dbm3/config.yaml')
+
+        config = model.get_compartment_config()
+
+        required_keys = {"name", "D", "slices", "v_crit", "g_crit"}
+        for comp_config in config:
+            assert isinstance(comp_config, dict), "Each compartment config should be a dict"
+            for key in required_keys:
+                assert key in comp_config, f"Compartment config missing key: {key}"
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])
