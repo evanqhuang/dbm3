@@ -332,7 +332,8 @@ def _plan_dive_impl(params: Dict[str, Any]) -> Dict[str, Any]:
         gradient = float(slab[1] - ppn2_surface)
 
         # Excess gas (integrated above surface equilibrium)
-        dx = 1.0 / comp_config["slices"]
+        # Must use slab_model.dx (default 1.0), NOT 1/slices — v_crit was calibrated with dx=1.0
+        dx = slab_model.dx
         excess_gas = float(sum(max(0.0, s - ppn2_surface) * dx for s in slab))
 
         compartment_data.append({
