@@ -242,6 +242,188 @@ var PlannerCharts = (function () {
     Plotly.newPlot(elementId, [gradientTrace, riskTrace, thresholdTrace], layout, PLOTLY_CONFIG);
   }
 
+  // Color assignments per compartment
+  var COMPARTMENT_COLORS = {
+    Spine:  { r: 79,  g: 195, b: 247 },  // cyan
+    Muscle: { r: 253, g: 216, b: 53  },  // yellow
+    Joints: { r: 239, g: 83,  b: 80  },  // red
+  };
+
+  function renderSlabGradientChart(compartments, ppN2Surface) {
+    var canvas = document.getElementById('slab-gradient-chart');
+    if (!canvas) return;
+
+    var container = canvas.parentElement;
+    var dpr = window.devicePixelRatio || 1;
+
+    // Layout constants
+    var barHeight = 50;
+    var barGap = 12;
+    var labelWidth = 70;
+    var rightPad = 20;
+    var topPad = 30;
+    var bottomPad = 35;
+    var legendHeight = 20;
+
+    var numBars = compartments.length;
+    var canvasWidth = container.clientWidth;
+    var canvasHeight = topPad + numBars * barHeight + (numBars - 1) * barGap + bottomPad + legendHeight;
+
+    // Set canvas size (CSS vs physical for retina)
+    canvas.style.width = canvasWidth + 'px';
+    canvas.style.height = canvasHeight + 'px';
+    canvas.width = canvasWidth * dpr;
+    canvas.height = canvasHeight * dpr;
+
+    var ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // Clear
+    ctx.fillStyle = '#0f0f1a';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    // Compute global min/max ppN2 across all slices for consistent mapping
+    var globalMin = Infinity;
+    var globalMax = -Infinity;
+    for (var c = 0; c < compartments.length; c++) {
+      var slices = compartments[c].slices;
+      if (!slices) continue;
+      for (var s = 0; s < slices.length; s++) {
+        if (slices[s] < globalMin) globalMin = slices[s];
+        if (slices[s] > globalMax) globalMax = slices[s];
+      }
+    }
+    // Include surface ppN2 in range for context
+    if (ppN2Surface < globalMin) globalMin = ppN2Surface;
+    var range = globalMax - globalMin;
+    if (range < 0.001) range = 0.001; // prevent division by zero
+
+    var barLeft = labelWidth;
+    var barWidth = canvasWidth - labelWidth - rightPad;
+
+    // Draw each compartment bar
+    for (var i = 0; i < compartments.length; i++) {
+      var comp = compartments[i];
+      var sliceData = comp.slices;
+      if (!sliceData || sliceData.length === 0) continue;
+
+      var color = COMPARTMENT_COLORS[comp.name] || { r: 200, g: 200, b: 200 };
+      var y = topPad + i * (barHeight + barGap);
+      var numSlices = sliceData.length;
+
+      // Draw gradient bar pixel-by-pixel (column-wise)
+      for (var px = 0; px < barWidth; px++) {
+        // Map pixel position to fractional slice index
+        var slicePos = (px / barWidth) * (numSlices - 1);
+        var idx = Math.floor(slicePos);
+        var frac = slicePos - idx;
+        var nextIdx = Math.min(idx + 1, numSlices - 1);
+
+        // Linear interpolation between adjacent slices
+        var ppN2 = sliceData[idx] * (1 - frac) + sliceData[nextIdx] * frac;
+
+        // Map to alpha (0.05 min so the bar outline is visible)
+        var alpha = 0.05 + 0.95 * (ppN2 - globalMin) / range;
+
+        ctx.fillStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ',' + alpha.toFixed(3) + ')';
+        ctx.fillRect(barLeft + px, y, 1, barHeight);
+      }
+
+      // Bar outline
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barLeft, y, barWidth, barHeight);
+
+      // Surface ppN2 marker (vertical dashed line at equilibrium level)
+      var eqAlpha = (ppN2Surface - globalMin) / range;
+      var eqX = barLeft + eqAlpha * barWidth;
+      if (eqX >= barLeft && eqX <= barLeft + barWidth) {
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(eqX, y);
+        ctx.lineTo(eqX, y + barHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Compartment label
+      ctx.fillStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ', 0.9)';
+      ctx.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(comp.name, labelWidth - 10, y + barHeight / 2);
+
+      // D value (diffusion coefficient)
+      ctx.fillStyle = 'rgba(200, 200, 220, 0.5)';
+      ctx.font = '9px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      ctx.fillText('D=' + comp.D, labelWidth - 10, y + barHeight / 2 + 13);
+    }
+
+    // Axis labels
+    ctx.fillStyle = 'rgba(200, 200, 220, 0.7)';
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    // Title
+    ctx.fillStyle = 'rgba(224, 224, 224, 0.9)';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ppN\u2082 Concentration Across Tissue Slabs', barLeft + barWidth / 2, 5);
+
+    // "Blood" and "Core" axis labels below the bars
+    var axisY = topPad + numBars * (barHeight + barGap) - barGap + 8;
+    ctx.fillStyle = 'rgba(200, 200, 220, 0.7)';
+    ctx.font = '10px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('Blood', barLeft, axisY);
+    ctx.textAlign = 'right';
+    ctx.fillText('Core', barLeft + barWidth, axisY);
+
+    // Arrow line between labels
+    ctx.strokeStyle = 'rgba(200, 200, 220, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(barLeft + 35, axisY + 5);
+    ctx.lineTo(barLeft + barWidth - 28, axisY + 5);
+    ctx.stroke();
+    // Arrowhead
+    ctx.beginPath();
+    ctx.moveTo(barLeft + barWidth - 28, axisY + 5);
+    ctx.lineTo(barLeft + barWidth - 34, axisY + 2);
+    ctx.lineTo(barLeft + barWidth - 34, axisY + 8);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(200, 200, 220, 0.3)';
+    ctx.fill();
+
+    // Legend: ppN2 color scale
+    var legendY = canvasHeight - legendHeight - 5;
+    var legendLeft = barLeft;
+    var legendWidth = barWidth;
+    var legendBarH = 8;
+
+    // Draw gradient scale bar (grayscale)
+    for (var lx = 0; lx < legendWidth; lx++) {
+      var t = lx / legendWidth;
+      var a = 0.05 + 0.95 * t;
+      ctx.fillStyle = 'rgba(180, 180, 200,' + a.toFixed(3) + ')';
+      ctx.fillRect(legendLeft + lx, legendY, 1, legendBarH);
+    }
+
+    // Legend labels
+    ctx.fillStyle = 'rgba(200, 200, 220, 0.6)';
+    ctx.font = '9px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(globalMin.toFixed(2) + ' bar', legendLeft, legendY + legendBarH + 2);
+    ctx.textAlign = 'right';
+    ctx.fillText(globalMax.toFixed(2) + ' bar', legendLeft + legendWidth, legendY + legendBarH + 2);
+    ctx.textAlign = 'center';
+    ctx.fillText('ppN\u2082', legendLeft + legendWidth / 2, legendY + legendBarH + 2);
+  }
+
   function _generateDepthTicks(maxDepth) {
     var interval = 10;
     if (maxDepth > 100) interval = 20;
@@ -259,5 +441,6 @@ var PlannerCharts = (function () {
     renderProfileChart: renderProfileChart,
     renderBuhlmannTissueChart: renderBuhlmannTissueChart,
     renderSlabCompartmentChart: renderSlabCompartmentChart,
+    renderSlabGradientChart: renderSlabGradientChart,
   };
 })();

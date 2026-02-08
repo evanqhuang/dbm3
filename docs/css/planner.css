@@ -279,6 +279,13 @@
   padding: 0.5rem;
 }
 
+/* Gradient canvas */
+.gradient-canvas {
+  width: 100%;
+  border-radius: 6px;
+  background: #0f0f1a;
+}
+
 /* Computing state */
 .computing .btn-primary {
   opacity: 0.6;

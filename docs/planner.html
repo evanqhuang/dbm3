@@ -45,11 +45,11 @@
         </div>
         <div class="control-group">
           <label for="input-gf-low">GF Low</label>
-          <input type="number" id="input-gf-low" value="100" min="1" max="100" step="1">
+          <input type="number" id="input-gf-low" value="70" min="1" max="100" step="1">
         </div>
         <div class="control-group">
           <label for="input-gf-high">GF High</label>
-          <input type="number" id="input-gf-high" value="100" min="1" max="100" step="1">
+          <input type="number" id="input-gf-high" value="85" min="1" max="100" step="1">
         </div>
         <div class="control-group">
           <label for="input-conservatism">Conservatism</label>
@@ -81,6 +81,12 @@
           <div id="slab-compartment-chart" class="chart-container chart-small"></div>
         </div>
       </div>
+    </section>
+
+    <!-- Tissue Diffusion Gradient (Canvas visualization) -->
+    <section id="gradient-section" class="chart-section" style="display:none">
+      <h2>Tissue Diffusion Gradient</h2>
+      <canvas id="slab-gradient-chart" class="gradient-canvas"></canvas>
     </section>
 
     <!-- Deco Schedule (side-by-side, shown when deco required) -->

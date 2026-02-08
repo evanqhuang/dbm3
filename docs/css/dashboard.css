@@ -261,6 +261,10 @@ main {
   border-radius: 8px;
   padding: 0.5rem;
   min-height: 300px;
+  overflow: hidden;
+  box-sizing: border-box;
+  max-width: 100%;
+  width: 100%;
 }
 
 /* Heatmap Grid */

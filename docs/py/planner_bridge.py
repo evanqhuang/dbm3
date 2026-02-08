@@ -342,6 +342,8 @@ def _plan_dive_impl(params: Dict[str, Any]) -> Dict[str, Any]:
             "gCrit": float(comp_config["g_crit"]),
             "excessGas": excess_gas,
             "vCrit": float(comp_config["v_crit"]),
+            "slices": _to_python(slab.tolist()),
+            "D": float(comp_config["D"]),
         })
 
     slab_data = {
@@ -353,6 +355,7 @@ def _plan_dive_impl(params: Dict[str, Any]) -> Dict[str, Any]:
         "ceilingsOverTime": _to_python(slab_ceilings),
         "compartments": compartment_data,
         "decoStops": _to_python(slab_deco_stops),
+        "ppN2Surface": float(ppn2_surface),
     }
 
     return {

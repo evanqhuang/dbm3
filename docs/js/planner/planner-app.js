@@ -123,6 +123,10 @@ import planner_bridge
       PlannerCharts.renderBuhlmannTissueChart(result.buhlmann.tissueN2, result.buhlmann.mValues);
       PlannerCharts.renderSlabCompartmentChart(result.slab.compartments);
 
+      // Render slab diffusion gradient visualization (show section first so canvas has layout width)
+      document.getElementById('gradient-section').style.display = '';
+      PlannerCharts.renderSlabGradientChart(result.slab.compartments, result.slab.ppN2Surface);
+
       // Render deco schedules
       PlannerUI.renderDecoSchedule(result.buhlmann, result.slab);
 
