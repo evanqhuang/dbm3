@@ -14,6 +14,27 @@ var PlannerCharts = (function () {
 
   var PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
 
+  function _isMobile() {
+    return window.innerWidth < 600;
+  }
+
+  function _mobileMargin(defaults) {
+    if (!_isMobile()) return defaults;
+    return { t: Math.min(defaults.t, 25), r: 10, b: 40, l: 40 };
+  }
+
+  function _mobileLegend(defaults) {
+    if (!_isMobile()) return defaults;
+    return {
+      orientation: 'h',
+      x: 0.5,
+      xanchor: 'center',
+      y: -0.25,
+      bgcolor: 'rgba(26, 26, 46, 0.8)',
+      font: { size: 9 },
+    };
+  }
+
   function renderProfileChart(profileData, buhlmannCeilings, slabCeilings) {
     var elementId = 'profile-chart';
     Plotly.purge(elementId);
@@ -78,33 +99,36 @@ var PlannerCharts = (function () {
     var maxDepth = Math.max.apply(null, depths);
     var maxTime = Math.max.apply(null, times);
 
+    var mobile = _isMobile();
     var layout = {
       paper_bgcolor: DARK_LAYOUT.paper_bgcolor,
       plot_bgcolor: DARK_LAYOUT.plot_bgcolor,
       font: DARK_LAYOUT.font,
-      margin: { t: 30, r: 20, b: 50, l: 60 },
-      title: { text: 'Dive Profile', font: { size: 14 } },
+      margin: _mobileMargin({ t: 30, r: 20, b: 50, l: 60 }),
+      title: { text: 'Dive Profile', font: { size: mobile ? 12 : 14 } },
       xaxis: {
-        title: 'Time (min)',
+        title: mobile ? null : 'Time (min)',
         gridcolor: '#2a2a4a',
         zerolinecolor: '#2a2a4a',
         range: [0, maxTime * 1.05],
+        tickfont: { size: mobile ? 9 : 12 },
       },
       yaxis: {
-        title: 'Depth (m)',
+        title: mobile ? null : 'Depth (m)',
         gridcolor: '#2a2a4a',
         zerolinecolor: '#2a2a4a',
         range: [-(maxDepth * 1.15), 2],
         tickvals: _generateDepthTicks(maxDepth),
         ticktext: _generateDepthTicks(maxDepth).map(function (v) { return Math.abs(v).toString(); }),
+        tickfont: { size: mobile ? 9 : 12 },
       },
-      legend: {
+      legend: _mobileLegend({
         x: 1,
         xanchor: 'right',
         y: 1,
         bgcolor: 'rgba(26, 26, 46, 0.8)',
         font: { size: 11 },
-      },
+      }),
       showlegend: true,
     };
 
@@ -140,28 +164,30 @@ var PlannerCharts = (function () {
       hovertemplate: '%{x}<br>M-value: %{y:.3f} bar<extra></extra>',
     };
 
+    var mobile = _isMobile();
     var layout = {
       paper_bgcolor: DARK_LAYOUT.paper_bgcolor,
       plot_bgcolor: DARK_LAYOUT.plot_bgcolor,
       font: DARK_LAYOUT.font,
-      margin: { t: 30, r: 20, b: 40, l: 50 },
-      title: { text: 'Tissue Loading vs M-values', font: { size: 12 } },
+      margin: _mobileMargin({ t: 30, r: 20, b: 40, l: 50 }),
+      title: { text: 'Tissue Loading vs M-values', font: { size: mobile ? 10 : 12 } },
       xaxis: {
         gridcolor: '#2a2a4a',
-        tickfont: { size: 9 },
+        tickfont: { size: mobile ? 7 : 9 },
       },
       yaxis: {
-        title: 'Pressure (bar)',
+        title: mobile ? null : 'Pressure (bar)',
         gridcolor: '#2a2a4a',
         zerolinecolor: '#2a2a4a',
+        tickfont: { size: mobile ? 9 : 12 },
       },
-      legend: {
+      legend: _mobileLegend({
         x: 1,
         xanchor: 'right',
         y: 1,
         bgcolor: 'rgba(26, 26, 46, 0.8)',
         font: { size: 10 },
-      },
+      }),
       barmode: 'group',
       showlegend: true,
     };
@@ -214,27 +240,30 @@ var PlannerCharts = (function () {
       hoverinfo: 'skip',
     };
 
+    var mobile = _isMobile();
     var layout = {
       paper_bgcolor: DARK_LAYOUT.paper_bgcolor,
       plot_bgcolor: DARK_LAYOUT.plot_bgcolor,
       font: DARK_LAYOUT.font,
-      margin: { t: 30, r: 20, b: 40, l: 50 },
-      title: { text: 'Compartment Loading', font: { size: 12 } },
+      margin: _mobileMargin({ t: 30, r: 20, b: 40, l: 50 }),
+      title: { text: 'Compartment Loading', font: { size: mobile ? 10 : 12 } },
       xaxis: {
         gridcolor: '#2a2a4a',
+        tickfont: { size: mobile ? 9 : 12 },
       },
       yaxis: {
-        title: 'Fraction of Limit',
+        title: mobile ? null : 'Fraction of Limit',
         gridcolor: '#2a2a4a',
         zerolinecolor: '#2a2a4a',
+        tickfont: { size: mobile ? 9 : 12 },
       },
-      legend: {
+      legend: _mobileLegend({
         x: 1,
         xanchor: 'right',
         y: 1,
         bgcolor: 'rgba(26, 26, 46, 0.8)',
         font: { size: 10 },
-      },
+      }),
       barmode: 'group',
       showlegend: true,
     };
@@ -256,17 +285,18 @@ var PlannerCharts = (function () {
     var container = canvas.parentElement;
     var dpr = window.devicePixelRatio || 1;
 
-    // Layout constants
-    var barHeight = 50;
-    var barGap = 12;
-    var labelWidth = 70;
-    var rightPad = 20;
-    var topPad = 30;
-    var bottomPad = 35;
+    // Layout constants — scale for mobile
+    var canvasWidth = container.clientWidth;
+    var mobile = canvasWidth < 500;
+    var barHeight = mobile ? Math.max(30, Math.round(canvasWidth * 0.09)) : 50;
+    var barGap = mobile ? 8 : 12;
+    var labelWidth = mobile ? Math.max(50, Math.round(canvasWidth * 0.15)) : 70;
+    var rightPad = mobile ? 10 : 20;
+    var topPad = mobile ? 22 : 30;
+    var bottomPad = mobile ? 28 : 35;
     var legendHeight = 20;
 
     var numBars = compartments.length;
-    var canvasWidth = container.clientWidth;
     var canvasHeight = topPad + numBars * barHeight + (numBars - 1) * barGap + bottomPad + legendHeight;
 
     // Set canvas size (CSS vs physical for retina)
@@ -349,34 +379,38 @@ var PlannerCharts = (function () {
       }
 
       // Compartment label
+      var labelFont = mobile ? '10px' : '12px';
+      var subFont = mobile ? '8px' : '9px';
       ctx.fillStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ', 0.9)';
-      ctx.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      ctx.font = labelFont + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(comp.name, labelWidth - 10, y + barHeight / 2);
+      ctx.fillText(comp.name, labelWidth - 8, y + barHeight / 2);
 
       // D value (diffusion coefficient)
       ctx.fillStyle = 'rgba(200, 200, 220, 0.5)';
-      ctx.font = '9px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
-      ctx.fillText('D=' + comp.D, labelWidth - 10, y + barHeight / 2 + 13);
+      ctx.font = subFont + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      ctx.fillText('D=' + comp.D, labelWidth - 8, y + barHeight / 2 + (mobile ? 11 : 13));
     }
 
     // Axis labels
+    var axisFont = mobile ? '9px' : '11px';
+    var titleFont = mobile ? '10px' : '12px';
     ctx.fillStyle = 'rgba(200, 200, 220, 0.7)';
-    ctx.font = '11px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.font = axisFont + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
     // Title
     ctx.fillStyle = 'rgba(224, 224, 224, 0.9)';
-    ctx.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.font = titleFont + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('ppN\u2082 Concentration Across Tissue Slabs', barLeft + barWidth / 2, 5);
+    ctx.fillText(mobile ? 'ppN\u2082 Across Tissue Slabs' : 'ppN\u2082 Concentration Across Tissue Slabs', barLeft + barWidth / 2, 5);
 
     // "Blood" and "Core" axis labels below the bars
     var axisY = topPad + numBars * (barHeight + barGap) - barGap + 8;
     ctx.fillStyle = 'rgba(200, 200, 220, 0.7)';
-    ctx.font = '10px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.font = (mobile ? '9px' : '10px') + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText('Blood', barLeft, axisY);
     ctx.textAlign = 'right';
@@ -414,7 +448,7 @@ var PlannerCharts = (function () {
 
     // Legend labels
     ctx.fillStyle = 'rgba(200, 200, 220, 0.6)';
-    ctx.font = '9px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+    ctx.font = (mobile ? '8px' : '9px') + ' -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillText(globalMin.toFixed(2) + ' bar', legendLeft, legendY + legendBarH + 2);

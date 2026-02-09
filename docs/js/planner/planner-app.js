@@ -108,30 +108,27 @@ import planner_bridge
         return;
       }
 
-      // Render profile chart
+      // Render summaries
+      PlannerUI.renderBuhlmannSummary(result.buhlmann);
+      PlannerUI.renderSlabSummary(result.slab);
+
+      // Render deco schedules
+      PlannerUI.renderDecoSchedule(result.buhlmann, result.slab);
+
+      // Show results and gradient sections before rendering charts
+      // so Plotly can measure actual container widths
+      PlannerUI.showResults();
+      document.getElementById('gradient-section').style.display = '';
+
+      // Render charts (containers must be visible for correct sizing)
       PlannerCharts.renderProfileChart(
         result.profile,
         result.buhlmann.ceilingsOverTime,
         result.slab.ceilingsOverTime
       );
-
-      // Render summaries
-      PlannerUI.renderBuhlmannSummary(result.buhlmann);
-      PlannerUI.renderSlabSummary(result.slab);
-
-      // Render tissue/compartment charts
       PlannerCharts.renderBuhlmannTissueChart(result.buhlmann.tissueN2, result.buhlmann.mValues);
       PlannerCharts.renderSlabCompartmentChart(result.slab.compartments);
-
-      // Render slab diffusion gradient visualization (show section first so canvas has layout width)
-      document.getElementById('gradient-section').style.display = '';
       PlannerCharts.renderSlabGradientChart(result.slab.compartments, result.slab.ppN2Surface);
-
-      // Render deco schedules
-      PlannerUI.renderDecoSchedule(result.buhlmann, result.slab);
-
-      // Show results section
-      PlannerUI.showResults();
 
     } catch (err) {
       console.error('Compute failed:', err);

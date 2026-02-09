@@ -170,6 +170,8 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .result-card {
@@ -177,6 +179,8 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .result-card h3 {
@@ -214,6 +218,12 @@
 .metric-value.good { color: var(--green); }
 .metric-value.warn { color: var(--yellow); }
 .metric-value.bad { color: var(--red); }
+
+/* Constrain Plotly charts within result cards */
+.result-card .chart-container {
+  width: 100%;
+  max-width: 100%;
+}
 
 /* Small chart containers */
 .chart-small {
@@ -301,10 +311,33 @@
 
 @media (max-width: 768px) {
   .param-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 0.5rem;
   }
 
   .level-row {
     flex-wrap: wrap;
+  }
+
+  .level-row input[type="number"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .btn-primary {
+    width: 100%;
+  }
+
+  .chart-container {
+    min-height: 220px;
+  }
+
+  .chart-small {
+    min-height: 160px;
+  }
+
+  .result-card {
+    padding: 0.75rem;
   }
 }
