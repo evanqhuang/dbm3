@@ -122,3 +122,12 @@ __pycache__/
 
 # Generated Pyodide copies of backtest modules (built by scripts/sync_planner_py.sh)
 docs/py/backtest/
+
+# Terraform
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
+
+# Node (wrangler)
+node_modules/
